@@ -33,4 +33,4 @@ cifar100_super_classes = {
 	'vehicles_2': [41, 69, 81, 85, 89]
 }
 
-NUM_PER_CLASS = 5
+NUM_PER_SUPERCLASS = 5

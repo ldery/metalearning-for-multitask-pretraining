@@ -10,10 +10,11 @@
 #     limitations under the License.
 
 
-import torch
 from superclasses import *
+import torch
 import torchvision
 import numpy as np
+import math
 from collections import defaultdict
 
 
@@ -42,8 +43,8 @@ class CIFAR100:
 			key_ = reversed_name_dict[y][0]
 			new_class = reversed_name_dict[y][1]
 			if len(this_dict_[key_]) == 0:
-				this_dict_[key_] = [[] for _ in range(NUM_PER_CLASS)]
-			this_dict_[key_][new_class].extend(x.flatten() if flatten else x)
+				this_dict_[key_] = [[] for _ in range(NUM_PER_SUPERCLASS)]
+			this_dict_[key_][new_class].append(x.flatten() if flatten else x)
 		return this_dict_
 
 	def _group_data(self, flatten=False):
@@ -61,14 +62,92 @@ class CIFAR100:
 				train_list.append(pair)
 			else:
 				val_list.append(pair)
+		# Todo [ldery]
+		# We can add new classes corresponding to transformations on the data
 		self.train_dict_ = self._create_new_classes(train_list, reversed_dict, flatten)
 		self.val_dict_ = self._create_new_classes(val_list, reversed_dict, flatten)
 		self.test_dict_ = self._create_new_classes(self.test, reversed_dict, flatten)
 
+	def _get_iterator(self, classes, batch_sz, split='train', shuffle=True):
+		chosen_dict = self.train_dict_
+		if split == 'val':
+			chosen_dict = self.val_dict_
+		elif split == 'test':
+			chosen_dict = self.test_dict_
+		else:
+			assert "Invalid value of split given {}".format(split)
+		per_sub_class = math.ceil(batch_sz / NUM_PER_SUPERCLASS)
+		assert per_sub_class > 0, 'Samples per-sub-class must be > 0'
+
+		# Setup the random idxs
+		iter_idx_dict = defaultdict(list)
+		max_iters = -1
+		for class_ in classes:
+			data_ = chosen_dict[class_]
+			if shuffle:
+				idxs = [np.random.permutation(len(x)) for x in data_]
+			else:
+				idxs = [np.arange(len(x)) for x in data_]
+			iter_idx_dict[class_] = idxs
+			if max_iters < 0:
+				max_iters = min([len(x) for x in data_])
+			else:
+				max_iters = min(max_iters, *[len(x) for x in data_])
+		# TODO [ldery] :
+		# This approach means some of the data might not be looked at. Look into it.
+		max_iters = int(max_iters / per_sub_class)
+		assert max_iters > 0
+		print('Iterator will run for {} iters.'.format(max_iters))
+		num_iters = 0
+		while True:
+			batch_dict = {}
+			num_iters += 1
+			for class_ in classes:
+				data_ = chosen_dict[class_]
+				idxs = iter_idx_dict[class_]
+				xs, ys = [], []
+				for id_, vals in enumerate(idxs):
+					xs.extend([data_[id_][i] for i in vals[:per_sub_class]])
+					ys.extend([id_ for _ in range(per_sub_class)])
+					idxs[id_] = vals[per_sub_class:]
+				xs, ys = torch.stack(xs).cuda(), torch.tensor(ys).cuda()
+				batch_dict[class_] = (xs, ys)
+			yield batch_dict
+			if num_iters == max_iters:
+				break
+
+
+def visualize(dict_, dict_name):
+	if not os.path.exists(dict_name):
+		os.makedirs(dict_name)
+	for k, v in dict_.items():
+		idxs = np.random.choice(50, size=NUM_PER_SUPERCLASS)
+		chosen = []
+		for id_, class_ in enumerate(v):
+			chosen.append(class_[idxs[id_]])
+		loc = "{}/{}".format(dict_name, k)
+		if not os.path.exists(loc):
+			os.makedirs(loc)
+
+		for id_, img in enumerate(chosen):
+			np_img = img.cpu().numpy()
+			np_img = np.transpose(np_img, (1, 2, 0))
+			plt.imshow(np_img)
+			plt.savefig("{}/{}/{}.png".format(dict_name, k, id_))
+			plt.show()
+			plt.close()
+
 
 if __name__ == '__main__':
 	import pdb
+	import os
+	import matplotlib.pyplot as plt
 	data = CIFAR100(flatten=False)
+	for batch in data._get_iterator(['flowers', 'aquatic_mammals'], 32):
+		print('Iterating')
 	pdb.set_trace()
-
+	# visualize(data.train_dict_, 'train')
+	# visualize(data.val_dict_, 'val')
+	# visualize(data.test_dict_, 'test')
+	# pdb.set_trace()
 
