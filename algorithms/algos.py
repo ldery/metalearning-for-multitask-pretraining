@@ -19,6 +19,7 @@ import pickle
 import os
 import pdb
 from pprint import pprint
+from copy import deepcopy
 
 
 def add_trainer_args(parser):
@@ -94,65 +95,85 @@ class Trainer(object):
 			summary[k] = (v[0] / v[2], v[1] / v[2])
 		return summary
 
-	def run_epoch(self, model, group_iter, optim, primary_iter, meta_weights):
+	def run_epoch_w_meta(self, model, group_iter, optim, primary_iter, meta_weights):
 		model.train()
 		stats = defaultdict(lambda: [0.0, 0.0, 0.0])
-		group_iter = iter(group_iter)
-		pdb.set_trace()
-		for batch in primary_iter:
+		group_batches = [batch for batch in group_iter]
+
+		for iter_id, batch in enumerate(primary_iter):
 			# todo [ldery] - this probs won't work
-			group_batch = group_iter.next()
+			if iter_id >= len(group_batches):
+				break
+			group_batch = group_batches[iter_id]
 
 			optim.zero_grad()
 
 			# clone the model
-			new_model = model.clone().detach()
+			new_model = deepcopy(model)
 
 			# get the weighted losses
 			for key, (xs, ys) in group_batch.items():
 				results = self.run_model(xs, ys, new_model, group=key, reduct_='mean')
-				new_loss = (torch.sigmoid(meta_weights[key]).item()) * results[0]
+				weighted_loss = (torch.sigmoid(meta_weights[key]).item()) * results[0]
 				weighted_loss.backward()  # Accumulate the gradient so you don't hold on to graph
+
 			# Take a gradient step in the new model
 			with torch.no_grad():
 				for pname, param in new_model.named_parameters():
 					assert param.grad is not None, '{} param has no gradient'.format(pname)
-					param.data.copy_(param.data - self.lr * param.grad.data)
+					param.data.copy_(param.data - param.grad.data) # lr = 1.0
 					param.grad.zero_()
+
 			# calculate the gradient w.r.t primary data
-			for key, (xs, ys) in batch.items():
-				results = self.run_model(xs, ys, new_model, group=key, reduct_='mean')
+			for primary_key, (xs, ys) in batch.items():
+				results = self.run_model(xs, ys, new_model, group=primary_key, reduct_='mean')
 				stats[key][0] += results[0].item() * len(ys)
 				stats[key][1] += results[1].item()
 				stats[key][2] += len(ys)
 				results[0].backward()
+
 			# Now calculate the gradients of the meta-weights
 			for key, (xs, ys) in group_batch.items():
 				result = self.run_model(xs, ys, model, group=key, reduct_='mean')
-				grads = torch.autograd.grad(result[0], model.parameters())
+				grads = torch.autograd.grad(result[0], model.parameters(), allow_unused=True)
 				dot_prod = 0
 				with torch.no_grad():
 					for idx_, param in enumerate(new_model.parameters()):
-						dot_prod += (param.grad * grads[idx_].grad).sum()
+						if grads[idx_] is None:
+							continue
+						dot_prod += (param.grad * grads[idx_]).sum()
+
 					dot_prod = dot_prod.item()
 				var_ = torch.sigmoid(meta_weights[key]) * dot_prod
 				var_.backward()
 				# update the meta_var
 				with torch.no_grad():
-					meta_weights[key].copy_(meta_weights[key] - self.lr * meta_weights[key].grad)
+					meta_weights[key].copy_(meta_weights[key] - self.lr * 3 * meta_weights[key].grad)
 					meta_weights[key].grad.zero_()
 			# update the gradients of the main model
 			with torch.no_grad():
-				for p_old, p_new in zip(model.parameters(), new_model.paramters()):
-					p_old.grad.copy_(p_new.grad)
+				for p_old, p_new in zip(model.parameters(), new_model.parameters()):
+					if p_old.grad is not None:
+						p_old.grad.copy_(p_new.grad)
+				# copy over the heads
+				for key in meta_weights.keys():
+					if key == primary_key:
+						continue
+					old_head = model.head_modules["fc-{}".format(key)]
+					new_head = new_model.head_modules["fc-{}".format(key)]
+					pdb.set_trace()
+					for p_old, p_new in zip(old_head.parameters(), new_head.parameters()):
+						if p_old.grad is None:
+							p_old.grad = torch.zeros_like(p_old)
+						p_old.grad.copy_(p_new.grad)
+
 			# do an optimize step
-			optimizer.step()
+			optim.step()
 
 		summary = {}
 		for k, v in stats.items():
 			summary[k] = (v[0] / v[2], v[1] / v[2])
 		return summary
-
 
 	def model_exists(self, model, dataset, kwargs):
 		chkpt_path = kwargs["model_chkpt_fldr"]
@@ -211,7 +232,7 @@ class Trainer(object):
 		if kwargs['learn_meta_weights']:
 			assert len(monitor_list) == 1, 'We can only learn meta-weights when there is 1 primary class'
 			meta_weights = {class_: torch.tensor([0.0]).float().cuda() for class_ in kwargs['classes']}
-			for _, v in meta_weights:
+			for _, v in meta_weights.items():
 				v.requires_grad = True
 		for i in range(self.train_epochs):
 			tr_iter = dataset._get_iterator(kwargs['classes'], kwargs['batch_sz'], split='train', shuffle=True)
@@ -219,7 +240,10 @@ class Trainer(object):
 				tr_results = self.run_epoch(model, tr_iter, optim)
 			else:
 				primary_iter = dataset._get_iterator(monitor_list, kwargs['batch_sz'], split='train', shuffle=True)
-				tr_results = self.run_epoch_w_meta(model, group_iter, optim, primary_iter, meta_weights)
+				tr_results = self.run_epoch_w_meta(model, tr_iter, optim, primary_iter, meta_weights)
+				m_weights = {k: torch.sigmoid(v).item() for k, v in meta_weights.items()}
+				pprint(m_weights)
+				print('..' * 30)
 			for k, v in tr_results.items():
 				self.metrics[k]['train'].append(v)
 
