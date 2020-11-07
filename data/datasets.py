@@ -10,7 +10,7 @@
 #     limitations under the License.
 
 
-from superclasses import *
+from .superclasses import *
 import torch
 import torchvision
 import numpy as np
@@ -97,7 +97,6 @@ class CIFAR100:
 		# This approach means some of the data might not be looked at. Look into it.
 		max_iters = int(max_iters / per_sub_class)
 		assert max_iters > 0
-		print('Iterator will run for {} iters.'.format(max_iters))
 		num_iters = 0
 		while True:
 			batch_dict = {}

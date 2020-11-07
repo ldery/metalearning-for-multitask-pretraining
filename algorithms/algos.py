@@ -13,19 +13,17 @@ import torch
 import numpy as np
 from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from tqdm import tqdm
-from collections import defaultdict, namedtuple
+from collections import defaultdict
 from os import path
 import pickle
+import os
 import pdb
-from sklearn import metrics
-from .utils import *
-
+from pprint import pprint
 
 
 def add_trainer_args(parser):
 	parser.add_argument('-train-epochs', type=int, default=50)
-	parser.add_argument('-patience', type=int, default=15)
+	parser.add_argument('-patience', type=int, default=10)
 	parser.add_argument('-lr-patience', type=int, default=4)
 	parser.add_argument('-optimizer', type=str, default='Adam')
 	parser.add_argument('-lr', type=float, default=3e-4)
@@ -37,11 +35,10 @@ def add_trainer_args(parser):
 
 class Trainer(object):
 	def __init__(
-					self, train_epochs, chkpt_path, patience,
+					self, train_epochs, patience,
 				):
 		self.chkpt_every = 10  # save to checkpoint
 		self.train_epochs = train_epochs
-		self.chkpt_path = chkpt_path
 		self.patience = patience
 		self.max_grad_norm = 1.0
 
@@ -80,7 +77,7 @@ class Trainer(object):
 		for batch in data_iter:
 			if optim is not None:
 				optim.zero_grad()
-			for key, (xs, ys) in batch:
+			for key, (xs, ys) in batch.items():
 				results = self.run_model(xs, ys, model, group=key, reduct_='mean')
 				stats[key][0] += results[0].item() * len(ys)
 				stats[key][1] += results[1].item()
@@ -88,7 +85,6 @@ class Trainer(object):
 				results[0].backward()  # Accumulate the gradient so you don't hold on to graph
 
 			if optim is not None:
-				loss.backward()
 				# torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
 				optim.step()
 		summary = {}
@@ -97,7 +93,7 @@ class Trainer(object):
 		return summary
 
 	def model_exists(self, model, dataset, kwargs):
-		chkpt_path = kwargs["model_chkpt_path"]
+		chkpt_path = kwargs["model_chkpt_fldr"]
 		dir_name = path.dirname(chkpt_path)
 		metric_path = path.join(dir_name, "train_metrics.pkl")
 		if not path.exists(metric_path):
@@ -122,55 +118,75 @@ class Trainer(object):
 		assert 'model_chkpt_fldr' in arg_dict, 'Need to specify where to checkpoint model'
 		assert 'monitor_list' in arg_dict, 'Need to specify which super-classes are used for val monitoring'
 
+	def print_metrics(self, epoch, metric_dict):
+		final_str = ""
+		for k, v in metric_dict.items():
+			this_str = "{:30s} | ".format(k)
+			str_ = ""
+			for type_, vals in v.items():
+				str_ = "{} = ({:.3f}, {:.3f})| {}".format(type_, *(vals[-1]), str_)
+			this_str += str_
+			final_str = "{}\n{}".format(this_str, final_str)
+		print('Epoch {}\n'.format(epoch))
+		print(final_str)
+
 	def train(self, model, dataset, optim, lr_scheduler=None, **kwargs):
 		# Do the training
 		# Check if the model already exists and just return it
 		self.sanity_check_args(kwargs)
-		self.metrics = defaultdict(list)
+		self.metrics = defaultdict(lambda: defaultdict(list))
 		best_val_loss = float('inf')
 		saved_info = self.model_exists(model, dataset, kwargs)
 		if saved_info[0] is not None:
 			return saved_info[0], saved_info[1]
-		iterator = tqdm(range(self.train_epochs))
+
 		chkpt_path = kwargs["model_chkpt_fldr"]
 		best_path = os.path.join(chkpt_path, 'best.chkpt')
 		last_path = os.path.join(chkpt_path, 'last.chkpt')
 		monitor_list = kwargs['monitor_list']
-		monitor_metric = []
-		for i in iterator:
+		monitor_metric, best_epoch = [], -1
+		for i in range(self.train_epochs):
 			tr_iter = dataset._get_iterator(kwargs['classes'], kwargs['batch_sz'], split='train', shuffle=True)
 			tr_results = self.run_epoch(model, tr_iter, optim)
-			for k, v in tr_results:
-				self.metrics["tr_{}".format(k)].append(v)
+			for k, v in tr_results.items():
+				self.metrics[k]['train'].append(v)
 
 			val_iter = dataset._get_iterator(kwargs['classes'], kwargs['batch_sz'], split='val', shuffle=False)
-			val_results = self.run_epoch(model, val_iter, optim)
+			val_results = self.run_epoch(model, val_iter, None)
 			to_avg = []
-			for k, v in val_results:
-				self.metrics["val_{}".format(k)].append(v)
+			for k, v in val_results.items():
+				self.metrics[k]["val"].append(v)
 				if k in monitor_list:
 					to_avg.append(v[0])
+
+			test_iter = dataset._get_iterator(kwargs['classes'], kwargs['batch_sz'], split='test', shuffle=False)
+			test_results = self.run_epoch(model, test_iter, None)
+
+			for k, v in test_results.items():
+				self.metrics[k]["test"].append(v)
+
 			monitor_metric.append(np.mean(to_avg))
 			if lr_scheduler is not None:
 				lr_scheduler.step(monitor_metric[-1])
-			
+
 			if monitor_metric[-1] <= best_val_loss:
 				# We have seen an improvement in validation loss
 				best_val_loss = monitor_metric[-1]
 				torch.save(model.state_dict(), best_path)
+				best_epoch = i
 			else:
 				torch.save(model.state_dict(), last_path)
 
-			no_improvement = max(monitor_metric) not in monitor_metric[-self.patience:]
+			self.print_metrics(i, self.metrics)
+			print('--' * 30)
+
+			no_improvement = min(monitor_metric) not in monitor_metric[-self.patience:]
 			if i > self.patience and no_improvement:
 				break
 		# Load the best path
 		model.load_state_dict(torch.load(best_path))
 		test_iter = dataset._get_iterator(kwargs['classes'], kwargs['batch_sz'], split='test', shuffle=False)
-		test_results = self.run_epoch(model, test_iter, optim)
-		for k, v in test_results:
-			self.metrics["test_{}".format(k)].append(v)
-		return self.metrics, model
-
-
-
+		test_results = self.run_epoch(model, test_iter, None)
+		print('Final Test Results - Best Epoch ', best_epoch)
+		pprint({k: v for k, v in test_results.items() if k in monitor_list})
+		return self.metrics, test_results
