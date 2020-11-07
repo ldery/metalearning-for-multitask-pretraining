@@ -52,6 +52,8 @@ class Trainer(object):
 		else:
 			raise ValueError
 		# Reduce lr by 0.5 on plateau
+		# save the learning rate
+		self.lr = lr
 		lr_scheduler = ReduceLROnPlateau(optim, factor=0.5, patience=opts.lr_patience, min_lr=1e-5)
 		return optim, lr_scheduler
 
@@ -91,6 +93,58 @@ class Trainer(object):
 		for k, v in stats.items():
 			summary[k] = (v[0] / v[2], v[1] / v[2])
 		return summary
+
+	def run_epoch(self, model, group_iter, optim, primary_iter, meta_weights):
+		model.train()
+		stats = defaultdict(lambda: [0.0, 0.0, 0.0])
+		for batch in primary_iter:
+			# todo [ldery] - this probs won't work
+			group_batch = group_iter.next()
+			# clone the model
+			optim.zero_grad()
+			new_model = model.clone().detach()
+			
+			for key, (xs, ys) in group_batch.items():
+				results = self.run_model(xs, ys, new_model, group=key, reduct_='mean')
+				new_loss = (torch.sigmoid(meta_weights[key].item())) * results[0]
+				weighted_loss.backward()  # Accumulate the gradient so you don't hold on to graph
+			# Take a gradient step in the new model
+			with torch.no_grad():
+				for pname, param in new_model.named_parameters():
+					assert param.grad is not None, '{} param has no gradient'.format(pname)
+					param.data.copy_(param.data - self.lr * param.grad.data)
+					param.grad.zero_()
+			# calculate the gradient w.r.t primary data
+			for key, (xs, ys) in batch.items():
+				results = self.run_model(xs, ys, new_model, group=key, reduct_='mean')
+				results[0].backward()
+			# Now calculate the gradients of the meta-weights
+			for key, (xs, ys) in group_batch.items():
+				result = self.run_model(xs, ys, model, group=key, reduct_='mean')
+				grads = torch.autograd.grad(result[0], model.parameters())
+				dot_prod = 0
+				with torch.no_grad():
+					for idx_, param in enumerate(new_model.parameters()):
+						dot_prod += (param.grad * grads[idx_].grad).sum()
+					dot_prod = dot_prod.item()
+				var_ = torch.sigmoid(meta_weights[key])*dot_prod
+				var_.backward()
+				# update the meta_var
+				with torch.no_grad():
+					meta_weights[key].copy_(meta_weights[key] - self.lr * meta_weights[key].grad)
+					meta_weights[key].grad.zero_()
+			# update the gradients of the main model
+			with torch.no_grad():
+				for p_old, p_new in zip(model.parameters(), new_model.paramters()):
+					p_old.grad.copy_(p_new.grad)
+			# do an optimize step
+			optimizer.step()
+
+		summary = {}
+		for k, v in stats.items():
+			summary[k] = (v[0] / v[2], v[1] / v[2])
+		return summary
+
 
 	def model_exists(self, model, dataset, kwargs):
 		chkpt_path = kwargs["model_chkpt_fldr"]
@@ -145,9 +199,19 @@ class Trainer(object):
 		last_path = os.path.join(chkpt_path, 'last.chkpt')
 		monitor_list = kwargs['monitor_list']
 		monitor_metric, best_epoch = [], -1
+		# setup the meta-weights
+		if kwargs['learn_meta_weights']:
+			assert len(monitor_list) == 1, 'We can only learn meta-weights when there is 1 primary class'
+			meta_weights = {class_: torch.tensor([0.0]).float().cuda() for class_ in kwargs['classes']}
+			for _, v in meta_weights:
+				v.requires_grad = True
 		for i in range(self.train_epochs):
 			tr_iter = dataset._get_iterator(kwargs['classes'], kwargs['batch_sz'], split='train', shuffle=True)
-			tr_results = self.run_epoch(model, tr_iter, optim)
+			if not kwargs['learn_meta_weights']:
+				tr_results = self.run_epoch(model, tr_iter, optim)
+			else:
+				primary_iter = dataset._get_iterator(monitor_list, kwargs['batch_sz'], split='train', shuffle=True)
+				tr_results = self.run_epoch_w_meta(model, group_iter, optim, primary_iter, meta_weights)
 			for k, v in tr_results.items():
 				self.metrics[k]['train'].append(v)
 
