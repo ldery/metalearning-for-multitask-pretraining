@@ -97,16 +97,21 @@ class Trainer(object):
 	def run_epoch(self, model, group_iter, optim, primary_iter, meta_weights):
 		model.train()
 		stats = defaultdict(lambda: [0.0, 0.0, 0.0])
+		group_iter = iter(group_iter)
+		pdb.set_trace()
 		for batch in primary_iter:
 			# todo [ldery] - this probs won't work
 			group_batch = group_iter.next()
-			# clone the model
+
 			optim.zero_grad()
+
+			# clone the model
 			new_model = model.clone().detach()
-			
+
+			# get the weighted losses
 			for key, (xs, ys) in group_batch.items():
 				results = self.run_model(xs, ys, new_model, group=key, reduct_='mean')
-				new_loss = (torch.sigmoid(meta_weights[key].item())) * results[0]
+				new_loss = (torch.sigmoid(meta_weights[key]).item()) * results[0]
 				weighted_loss.backward()  # Accumulate the gradient so you don't hold on to graph
 			# Take a gradient step in the new model
 			with torch.no_grad():
@@ -117,6 +122,9 @@ class Trainer(object):
 			# calculate the gradient w.r.t primary data
 			for key, (xs, ys) in batch.items():
 				results = self.run_model(xs, ys, new_model, group=key, reduct_='mean')
+				stats[key][0] += results[0].item() * len(ys)
+				stats[key][1] += results[1].item()
+				stats[key][2] += len(ys)
 				results[0].backward()
 			# Now calculate the gradients of the meta-weights
 			for key, (xs, ys) in group_batch.items():
@@ -127,7 +135,7 @@ class Trainer(object):
 					for idx_, param in enumerate(new_model.parameters()):
 						dot_prod += (param.grad * grads[idx_].grad).sum()
 					dot_prod = dot_prod.item()
-				var_ = torch.sigmoid(meta_weights[key])*dot_prod
+				var_ = torch.sigmoid(meta_weights[key]) * dot_prod
 				var_.backward()
 				# update the meta_var
 				with torch.no_grad():
