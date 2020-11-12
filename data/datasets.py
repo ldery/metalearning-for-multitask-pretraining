@@ -105,6 +105,7 @@ class CIFAR100:
 				data_ = chosen_dict[class_]
 				idxs = iter_idx_dict[class_]
 				xs, ys = [], []
+				# Todo [ldery] = need to think about this - we're getting more data than supposed to
 				for id_, vals in enumerate(idxs):
 					xs.extend([data_[id_][i] for i in vals[:per_sub_class]])
 					ys.extend([id_ for _ in range(per_sub_class)])

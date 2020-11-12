@@ -70,6 +70,7 @@ class Trainer(object):
 				argmax = (torch.nn.Sigmoid()(output) > 0.5).squeeze().float()
 			return argmax.eq(targets).sum()
 
+	# Todo [ldery] - this function is no longer in use - either remove or re-write
 	def run_model(self, x, y, model, group=None, reduct_='none'):
 		model_out = model(x, head_name=group)
 		loss_fn = model.get_loss_fn(model.loss_fn_name, reduction=reduct_)
@@ -77,22 +78,40 @@ class Trainer(object):
 		num_correct = self._get_numcorrect(model_out, y)
 		return loss, num_correct
 
-	def run_epoch(self, model, data_iter, optim):
+	def run_epoch(self, model, data_iter, optim, alpha_generator=None):
+		assert alpha_generator is not None, 'Need to specify a weight generating strategy'
 		model.train()
 		if optim is None:
 			model.eval()
 		stats = defaultdict(lambda: [0.0, 0.0, 0.0])
+		loss_fn = model.get_loss_fn(model.loss_fn_name, reduction='mean')
 		for batch in data_iter:
 			if optim is not None:
 				optim.zero_grad()
+			key_boundaries, prev_pos = {}, 0
+			bulk_x = []
 			for key, (xs, ys) in batch.items():
-				results = self.run_model(xs, ys, model, group=key, reduct_='mean')
-				stats[key][0] += results[0].item() * len(ys)
-				stats[key][1] += results[1].item()
-				stats[key][2] += len(ys)
-				results[0].backward()  # Accumulate the gradient so you don't hold on to graph
+				# gather the batches together. Skip if
+				if alpha_generator[key] == 0.0:
+					continue
+				bulk_x.append(xs)
+				key_boundaries[key] = (prev_pos, prev_pos + len(xs), ys)
+				prev_pos += len(xs)
+			# Stack and run through model
+			joint_x = torch.cat(bulk_x, axis=0)
+			shared_out = model(joint_x, body_only=True)
+			total_loss = 0
+			for key, pos_pair in key_boundaries.items():
+				this_out = shared_out[pos_pair[0]:pos_pair[1], :]
+				m_out = model(this_out, head_name=key, head_only=True)
+				loss_ = loss_fn(m_out, pos_pair[-1])
+				total_loss = total_loss + alpha_generator[key] * loss_
 
+				stats[key][0] += loss_.item() * len(pos_pair[-1])
+				stats[key][1] += self._get_numcorrect(m_out, pos_pair[-1])
+				stats[key][2] += len(pos_pair[-1])
 			if optim is not None:
+				total_loss.backward()  # backprop the accumulated gradient
 				# torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
 				optim.step()
 		summary = {}
@@ -237,10 +256,12 @@ class Trainer(object):
 			for _, v in meta_weights.items():
 				v.requires_grad = True
 		to_eval = kwargs['classes']
+		alpha_gen = kwargs['alpha_generator']
 		for i in range(self.train_epochs):
+			alpha_gen.prep_epoch_start(i)
 			tr_iter = dataset._get_iterator(kwargs['classes'], kwargs['batch_sz'], split='train', shuffle=True)
 			if not kwargs['learn_meta_weights']:
-				tr_results = self.run_epoch(model, tr_iter, optim)
+				tr_results = self.run_epoch(model, tr_iter, optim, alpha_generator=alpha_gen)
 			else:
 				primary_iter = dataset._get_iterator(monitor_list, kwargs['batch_sz'], split='train', shuffle=True)
 				tr_results = self.run_epoch_w_meta(model, tr_iter, optim, primary_iter, meta_weights, primary_keys=monitor_list)
@@ -278,7 +299,7 @@ class Trainer(object):
 			if kwargs['learn_meta_weights']:
 				pprint(m_weights)
 			print('--' * 30)
-
+			alpha_gen.record_epoch_end(i, monitor_metric[-1])
 			no_improvement = max(monitor_metric) not in monitor_metric[-self.patience:]
 			if i > self.patience and no_improvement:
 				break
