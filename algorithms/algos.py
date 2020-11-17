@@ -79,7 +79,7 @@ class Trainer(object):
 		return loss, num_correct
 
 	def run_epoch(self, model, data_iter, optim, alpha_generator=None):
-		assert alpha_generator is not None, 'Need to specify a weight generating strategy'
+		# assert alpha_generator is not None, 'Need to specify a weight generating strategy'
 		model.train()
 		if optim is None:
 			model.eval()
@@ -92,7 +92,7 @@ class Trainer(object):
 			bulk_x = []
 			for key, (xs, ys) in batch.items():
 				# gather the batches together. Skip if
-				if alpha_generator[key] == 0.0:
+				if (alpha_generator is not None) and alpha_generator[key] == 0.0:
 					continue
 				bulk_x.append(xs)
 				key_boundaries[key] = (prev_pos, prev_pos + len(xs), ys)
@@ -105,7 +105,10 @@ class Trainer(object):
 				this_out = shared_out[pos_pair[0]:pos_pair[1], :]
 				m_out = model(this_out, head_name=key, head_only=True)
 				loss_ = loss_fn(m_out, pos_pair[-1])
-				total_loss = total_loss + alpha_generator[key] * loss_
+				if alpha_generator is not None:
+					total_loss = total_loss + alpha_generator[key] * loss_
+				else:
+					total_loss += loss_
 
 				stats[key][0] += loss_.item() * len(pos_pair[-1])
 				stats[key][1] += self._get_numcorrect(m_out, pos_pair[-1])
@@ -116,7 +119,7 @@ class Trainer(object):
 				optim.step()
 		summary = {}
 		for k, v in stats.items():
-			summary[k] = (v[0] / v[2], v[1] / v[2])
+			summary[k] = (v[0] / v[2], v[1].item() / v[2])
 		return summary
 
 	def run_epoch_w_meta(self, model, group_iter, optim, primary_iter, meta_weights, primary_keys=None):
@@ -139,7 +142,7 @@ class Trainer(object):
 			n_losses = len(group_batch.keys())
 			for key, (xs, ys) in group_batch.items():
 				results = self.run_model(xs, ys, new_model, group=key, reduct_='mean')
-				weighted_loss = (torch.sigmoid(meta_weights[key]).item()) * results[0]  # * (1.0 / n_losses)
+				weighted_loss = (torch.sigmoid(meta_weights[key]).item()) * results[0] * (1.0 / n_losses)
 				weighted_loss.backward()  # Accumulate the gradient so you don't hold on to graph
 
 			# Take a gradient step in the new model
@@ -257,10 +260,12 @@ class Trainer(object):
 				v.requires_grad = True
 		to_eval = kwargs['classes']
 		alpha_gen = kwargs['alpha_generator']
+		m_weights = None
 		for i in range(self.train_epochs):
-			alpha_gen.prep_epoch_start(i)
 			tr_iter = dataset._get_iterator(kwargs['classes'], kwargs['batch_sz'], split='train', shuffle=True)
 			if not kwargs['learn_meta_weights']:
+				if alpha_gen is not None:
+					alpha_gen.prep_epoch_start(i)
 				tr_results = self.run_epoch(model, tr_iter, optim, alpha_generator=alpha_gen)
 			else:
 				primary_iter = dataset._get_iterator(monitor_list, kwargs['batch_sz'], split='train', shuffle=True)
@@ -277,15 +282,18 @@ class Trainer(object):
 				if k in monitor_list:
 					to_avg.append(v[1])
 
-			test_iter = dataset._get_iterator(to_eval, kwargs['batch_sz'], split='test', shuffle=False)
-			test_results = self.run_epoch(model, test_iter, None)
-
-			for k, v in test_results.items():
-				self.metrics[k]["test"].append(v)
-
 			monitor_metric.append(np.mean(to_avg))
 			if lr_scheduler is not None:
 				lr_scheduler.step(monitor_metric[-1])
+
+			test_iter = dataset._get_iterator(to_eval, kwargs['batch_sz'], split='test', shuffle=False)
+			test_results = self.run_epoch(model, test_iter, None)
+
+			to_avg = []
+			for k, v in test_results.items():
+				self.metrics[k]["test"].append(v)
+				if k in monitor_list:
+					to_avg.append(v[1])
 
 			if monitor_metric[-1] >= best_val_acc:
 				# We have seen an improvement in validation loss
@@ -299,7 +307,9 @@ class Trainer(object):
 			if kwargs['learn_meta_weights']:
 				pprint(m_weights)
 			print('--' * 30)
-			alpha_gen.record_epoch_end(i, monitor_metric[-1])
+
+			if alpha_gen is not None:
+				alpha_gen.record_epoch_end(i, np.mean(to_avg), meta_weights=m_weights)
 			no_improvement = max(monitor_metric) not in monitor_metric[-self.patience:]
 			if i > self.patience and no_improvement:
 				break

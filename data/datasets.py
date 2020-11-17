@@ -76,7 +76,8 @@ class CIFAR100:
 			chosen_dict = self.test_dict_
 		else:
 			assert "Invalid value of split given {}".format(split)
-		per_sub_class = math.ceil(batch_sz / NUM_PER_SUPERCLASS)
+		per_sub_class = math.ceil(batch_sz / (NUM_PER_SUPERCLASS * len(classes)))
+		per_sub_class = max(per_sub_class, NUM_PER_SUPERCLASS)  # Just using this because NUM_PER_SUPERCLASS = 5
 		assert per_sub_class > 0, 'Samples per-sub-class must be > 0'
 
 		# Setup the random idxs
