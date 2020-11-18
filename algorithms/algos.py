@@ -10,8 +10,9 @@
 #     limitations under the License.
 
 import torch
+import torch.nn.functional as F
 import numpy as np
-from torch.optim import Adam, AdamW
+from torch.optim import Adam, AdamW, SGD
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from collections import defaultdict
 from os import path
@@ -28,12 +29,28 @@ def add_trainer_args(parser):
 	parser.add_argument('-lr-patience', type=int, default=4)
 	parser.add_argument('-optimizer', type=str, default='Adam')
 	parser.add_argument('-lr', type=float, default=3e-4)
-	parser.add_argument('-meta-lr-weights', type=float, default=1e-1)
-	parser.add_argument('-meta-lr-sgd', type=float, default=5e-2)  # Don't make this too high
+	parser.add_argument(
+		'-meta-lr-weights', type=float, default=1.0,
+		help='Outer-loop lr for weights. Very important to tune'
+	)
+	# Don't make this too high if not the consecutive grads don't align much
+	parser.add_argument('-meta-lr-sgd', type=float, default=5e-3, help='Inner loop sgd lr. Very important to tune')
 	parser.add_argument('-batch-sz', type=int, default=128)
 	parser.add_argument('-chkpt-path', type=str, default='experiments')
 	parser.add_argument('-use-last-chkpt', action='store_true', help='Instead of using best, use last checkpoint')
 	parser.add_argument('-continue-from-last', action='store_true')
+
+
+def get_softmax(weights):
+	keys = []
+	values = []
+	for k, v in weights.items():
+		keys.append(k)
+		values.append(v)
+
+	joint_vec = torch.cat(values)
+	softmax = F.softmax(joint_vec, dim=-1)
+	return {k: v for k, v in zip(keys, softmax)}
 
 
 class Trainer(object):
@@ -52,6 +69,8 @@ class Trainer(object):
 		lr = opts.lr if not ft else opts.finetune_lr
 		if opts.optimizer == 'Adam':
 			optim = Adam(model.parameters(), lr=lr)
+		elif opts.optimizer == 'SGD':
+			optim = SGD(model.parameters(), lr=lr)
 		elif opts.optimizer == 'AdamW':
 			print('Using AdamW Optimizer')
 			optim = AdamW(model.parameters(), lr=lr, weight_decay=0.1)
@@ -127,6 +146,7 @@ class Trainer(object):
 		model.train()
 		stats = defaultdict(lambda: [0.0, 0.0, 0.0])
 		group_batches = [batch for batch in group_iter]
+
 		for iter_id, batch in enumerate(primary_iter):
 			# This is quite a few short-cuts. Look to make this better
 			if iter_id >= len(group_batches):
@@ -139,10 +159,11 @@ class Trainer(object):
 			new_model = deepcopy(model)
 
 			# get the weighted losses
-			n_losses = len(group_batch.keys())
+			sm_meta_weights = get_softmax(meta_weights)
 			for key, (xs, ys) in group_batch.items():
 				results = self.run_model(xs, ys, new_model, group=key, reduct_='mean')
-				weighted_loss = (torch.sigmoid(meta_weights[key]).item()) * results[0] * (1.0 / n_losses)
+				weighted_loss = sm_meta_weights[key].item() * results[0]
+				# weighted_loss = (torch.sigmoid(meta_weights[key]).item()) * results[0] * (1.0 / n_losses)
 				weighted_loss.backward()  # Accumulate the gradient so you don't hold on to graph
 
 			# Take a gradient step in the new model
@@ -173,13 +194,18 @@ class Trainer(object):
 						if grads[idx_] is None:
 							assert 'fc' in pname, '{} - Module has none gradient which is invalid'.format(pname)
 							continue
+						if param.grad is None:
+							continue
 						dot_prod += (param.grad * grads[idx_]).sum()
 
 					dot_prod = dot_prod.item()
-				var_ = self.meta_lr_sgd * (torch.sigmoid(meta_weights[key])) * dot_prod
-				var_.backward()
-				# update the meta_var
-				with torch.no_grad():
+
+				var_ = -self.meta_lr_sgd * (sm_meta_weights[key]) * dot_prod
+				var_.backward(retain_graph=True)
+				del var_
+			# update the meta_var
+			with torch.no_grad():
+				for key in meta_weights.keys():
 					meta_weights[key].copy_(meta_weights[key] - self.meta_lr_weights * meta_weights[key].grad)
 					meta_weights[key].grad.zero_()
 
@@ -187,7 +213,7 @@ class Trainer(object):
 			# get the weighted losses
 			for key, (xs, ys) in group_batch.items():
 				results = self.run_model(xs, ys, model, group=key, reduct_='mean')
-				weighted_loss = torch.sigmoid(meta_weights[key]).item() * results[0]
+				weighted_loss = sm_meta_weights[key].item() * results[0]
 				weighted_loss.backward()  # Accumulate the gradient so you don't hold on to graph
 
 			# do an optimize step
@@ -270,7 +296,8 @@ class Trainer(object):
 			else:
 				primary_iter = dataset._get_iterator(monitor_list, kwargs['batch_sz'], split='train', shuffle=True)
 				tr_results = self.run_epoch_w_meta(model, tr_iter, optim, primary_iter, meta_weights, primary_keys=monitor_list)
-				m_weights = {k: torch.sigmoid(v).item() for k, v in meta_weights.items()}
+				sm_meta_weights = get_softmax(meta_weights)
+				m_weights = {k: v.item() for k, v in sm_meta_weights.items()}
 
 			for k, v in tr_results.items():
 				self.metrics[k]['train'].append(v)
