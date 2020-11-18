@@ -159,7 +159,7 @@ class Trainer(object):
 			new_model = deepcopy(model)
 
 			# get the weighted losses
-			sm_meta_weights = get_softmax(meta_weights)
+			sm_meta_weights = meta_weights  # get_softmax(meta_weights)
 			for key, (xs, ys) in group_batch.items():
 				results = self.run_model(xs, ys, new_model, group=key, reduct_='mean')
 				weighted_loss = sm_meta_weights[key].item() * results[0]
@@ -201,14 +201,18 @@ class Trainer(object):
 					dot_prod = dot_prod.item()
 
 				var_ = -self.meta_lr_sgd * (sm_meta_weights[key]) * dot_prod
-				var_.backward(retain_graph=True)
-				del var_
+				var_.backward()
+
 			# update the meta_var
 			with torch.no_grad():
+				norm_val = 0.0
 				for key in meta_weights.keys():
-					meta_weights[key].copy_(meta_weights[key] - self.meta_lr_weights * meta_weights[key].grad)
+					new_val = meta_weights[key] * torch.exp(- self.meta_lr_weights * meta_weights[key].grad)
+					norm_val += new_val.item()
+					meta_weights[key].copy_(new_val)
 					meta_weights[key].grad.zero_()
-
+				for key in meta_weights.keys():
+					meta_weights[key].div_(norm_val)
 			# update the gradients of the main model
 			# get the weighted losses
 			for key, (xs, ys) in group_batch.items():
@@ -296,8 +300,8 @@ class Trainer(object):
 			else:
 				primary_iter = dataset._get_iterator(monitor_list, kwargs['batch_sz'], split='train', shuffle=True)
 				tr_results = self.run_epoch_w_meta(model, tr_iter, optim, primary_iter, meta_weights, primary_keys=monitor_list)
-				sm_meta_weights = get_softmax(meta_weights)
-				m_weights = {k: v.item() for k, v in sm_meta_weights.items()}
+				# sm_meta_weights = get_softmax(meta_weights)
+				m_weights = {k: v.item() for k, v in meta_weights.items()}
 
 			for k, v in tr_results.items():
 				self.metrics[k]['train'].append(v)
