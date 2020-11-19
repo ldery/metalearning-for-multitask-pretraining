@@ -35,7 +35,7 @@ def add_trainer_args(parser):
 	)
 	# Don't make this too high if not the consecutive grads don't align much
 	parser.add_argument('-meta-lr-sgd', type=float, default=5e-3, help='Inner loop sgd lr. Very important to tune')
-	parser.add_argument('-batch-sz', type=int, default=128)
+	parser.add_argument('-batch-sz', type=int, default=320)
 	parser.add_argument('-chkpt-path', type=str, default='experiments')
 	parser.add_argument('-use-last-chkpt', action='store_true', help='Instead of using best, use last checkpoint')
 	parser.add_argument('-continue-from-last', action='store_true')
@@ -284,7 +284,8 @@ class Trainer(object):
 		# setup the meta-weights
 		if kwargs['learn_meta_weights']:
 			assert len(monitor_list) == 1, 'We can only learn meta-weights when there is 1 primary class'
-			inits = np.random.uniform(low=-1.0, high=1.0, size=len(kwargs['classes']))
+			inits = np.random.uniform(low=1.0, high=2.0, size=len(kwargs['classes']))
+			inits = inits / sum(inits)
 			meta_weights = {class_: torch.tensor([inits[id_]]).float().cuda() for id_, class_ in enumerate(kwargs['classes'])}
 			for _, v in meta_weights.items():
 				v.requires_grad = True
