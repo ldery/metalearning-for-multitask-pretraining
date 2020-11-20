@@ -10,6 +10,7 @@
 #     limitations under the License.
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from torch.optim import Adam, AdamW, SGD
@@ -23,6 +24,7 @@ from pprint import pprint
 from copy import deepcopy
 
 
+# NOTE [ldery] - put a freeze on adding anymore hyper-params until the ones you have are understood !
 def add_trainer_args(parser):
 	parser.add_argument('-train-epochs', type=int, default=100)
 	parser.add_argument('-patience', type=int, default=10)
@@ -36,10 +38,12 @@ def add_trainer_args(parser):
 	# Don't make this too high if not the consecutive grads don't align much
 	parser.add_argument('-meta-lr-sgd', type=float, default=5e-3, help='Inner loop sgd lr. Very important to tune')
 	parser.add_argument('-batch-sz', type=int, default=320)
+	parser.add_argument('-meta-batch-sz', type=int, default=16)
 	parser.add_argument('-chkpt-path', type=str, default='experiments')
 	parser.add_argument('-use-last-chkpt', action='store_true', help='Instead of using best, use last checkpoint')
 	parser.add_argument('-continue-from-last', action='store_true')
 	parser.add_argument('-meta-split', type=str, default='train', choices=['train', 'val'])
+	parser.add_argument('-freeze-bn', action='store_true', help='Freeze the BN layers after pre-training')
 
 
 def get_softmax(weights):
@@ -100,139 +104,146 @@ class Trainer(object):
 		num_correct = self._get_numcorrect(model_out, y)
 		return loss, num_correct
 
-	def run_epoch(self, model, data_iter, optim, alpha_generator=None):
+	def run_epoch(self, model, data_iter, optim, alpha_generator=None, freeze_bn=False):
 		# assert alpha_generator is not None, 'Need to specify a weight generating strategy'
 		model.train()
 		if optim is None:
 			model.eval()
+		elif freeze_bn:
+			# We are fine-tuning so freeze the B.N layers
+			for module in model.modules():
+				if isinstance(module, nn.BatchNorm2d):
+					if hasattr(module, 'weight'):
+						module.weight.requires_grad_(False)
+					if hasattr(module, 'bias'):
+						module.bias.requires_grad_(False)
+					module.eval()
+
 		stats = defaultdict(lambda: [0.0, 0.0, 0.0])
-		loss_fn = model.get_loss_fn(model.loss_fn_name, reduction='mean')
 		for batch in data_iter:
 			if optim is not None:
 				optim.zero_grad()
-			key_boundaries, prev_pos = {}, 0
-			bulk_x = []
-			for key, (xs, ys) in batch.items():
-				# gather the batches together. Skip if
-				if (alpha_generator is not None) and alpha_generator[key] == 0.0:
-					continue
-				bulk_x.append(xs)
-				key_boundaries[key] = (prev_pos, prev_pos + len(xs), ys)
-				prev_pos += len(xs)
-			# Stack and run through model
-			joint_x = torch.cat(bulk_x, axis=0)
-			shared_out = model(joint_x, body_only=True)
-			total_loss = 0
-			alpha_sum = 0.0
-			for key, pos_pair in key_boundaries.items():
-				this_out = shared_out[pos_pair[0]:pos_pair[1], :]
-				m_out = model(this_out, head_name=key, head_only=True)
-				loss_ = loss_fn(m_out, pos_pair[-1])
-				if alpha_generator is not None:
-					alpha_sum += alpha_generator[key]
-					total_loss = total_loss + alpha_generator[key] * loss_
-				else:
-					alpha_sum += 1.0
-					total_loss += loss_
-
-				stats[key][0] += loss_.item() * len(pos_pair[-1])
-				stats[key][1] += self._get_numcorrect(m_out, pos_pair[-1])
-				stats[key][2] += len(pos_pair[-1])
+			total_loss = self.run_batch(model, batch, stats, alpha_generator)
 			if optim is not None:
-				total_loss = total_loss / alpha_sum
 				total_loss.backward()  # backprop the accumulated gradient
 				# torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
 				optim.step()
+
 		summary = {}
 		for k, v in stats.items():
 			summary[k] = (v[0] / v[2], v[1].item() / v[2])
 		return summary
 
+	def run_batch(self, model, batch, stats, alpha_generator):
+		loss_fn = model.get_loss_fn(model.loss_fn_name, reduction='mean')
+		key_boundaries, prev_pos = {}, 0
+		bulk_x = []
+		for key, (xs, ys) in batch.items():
+			# gather the batches together. Skip if
+			if (alpha_generator is not None) and alpha_generator[key] == 0.0:
+				continue
+			bulk_x.append(xs)
+			key_boundaries[key] = (prev_pos, prev_pos + len(xs), ys)
+			prev_pos += len(xs)
+		# Stack and run through model
+		joint_x = torch.cat(bulk_x, axis=0)
+		shared_out = model(joint_x, body_only=True)
+		total_loss = 0
+		alpha_sum = 0.0
+		for key, pos_pair in key_boundaries.items():
+			this_out = shared_out[pos_pair[0]:pos_pair[1], :]
+			m_out = model(this_out, head_name=key, head_only=True)
+			loss_ = loss_fn(m_out, pos_pair[-1])
+			if alpha_generator is not None:
+				alpha_sum += alpha_generator[key]
+				total_loss = total_loss + alpha_generator[key] * loss_
+			else:
+				alpha_sum += 1.0
+				total_loss += loss_
+			if stats is not None:
+				stats[key][0] += loss_.item() * len(pos_pair[-1])
+				stats[key][1] += self._get_numcorrect(m_out, pos_pair[-1])
+				stats[key][2] += len(pos_pair[-1])
+		if isinstance(alpha_sum, torch.Tensor):
+			alpha_sum = alpha_sum.item()
+		return total_loss / alpha_sum
+
 	def run_epoch_w_meta(self, model, group_iter, optim, primary_iter, meta_weights, primary_keys=None):
-		assert primary_keys is not None
+		# assert alpha_generator is not None, 'Need to specify a weight generating strategy'
 		model.train()
 		stats = defaultdict(lambda: [0.0, 0.0, 0.0])
-		group_batches = [batch for batch in group_iter]
+		loss_fn = model.get_loss_fn(model.loss_fn_name, reduction='mean')
+		primary_batches = [batch for batch in primary_iter]
+		counter = 0
+		for batch in group_iter:
+			# We do not have enough samples to continue, so wrap around
+			counter = counter % len(primary_batches)
 
-		for iter_id, batch in enumerate(primary_iter):
-			# This is quite a few short-cuts. Look to make this better
-			if iter_id >= len(group_batches):
-				break
-			group_batch = group_batches[iter_id]
+			if optim is not None:
+				optim.zero_grad()
 
-			optim.zero_grad()
+			# We need to learn the updated meta-weights here
+			# Copy the model into a new model
+			new_model = deepcopy(model)
+			loss_ = self.run_batch(new_model, batch, None, meta_weights)
+			loss_.backward()
 
-			# # clone the model
-			# new_model = deepcopy(model)
+			# We can now take an SGD step here
+			# Take a gradient step in the new model
+			with torch.no_grad():
+				for param in new_model.parameters():
+					assert param.grad is not None, 'All parameters of the new model should have filled gradients'
+					param.data.copy_(param.data - (self.meta_lr_sgd * param.grad.data))
+					param.grad.zero_()
 
-			# # get the weighted losses
-			sm_meta_weights = meta_weights  # get_softmax(meta_weights)
-			# for key, (xs, ys) in group_batch.items():
-			# 	results = self.run_model(xs, ys, new_model, group=key, reduct_='mean')
-			# 	weighted_loss = sm_meta_weights[key].item() * results[0]
-			# 	# weighted_loss = (torch.sigmoid(meta_weights[key]).item()) * results[0] * (1.0 / n_losses)
-			# 	weighted_loss.backward()  # Accumulate the gradient so you don't hold on to graph
+			# calculate the gradient w.r.t primary data
+			prim_batch = primary_batches[counter]
+			counter += 1
+			for primary_key, (xs, ys) in prim_batch.items():
+				results = self.run_model(xs, ys, new_model, group=primary_key, reduct_='mean')
+				results[0].backward()
 
-			# # Take a gradient step in the new model
-			# with torch.no_grad():
-			# 	for pname, param in new_model.named_parameters():
-			# 		if param.grad is None:
-			# 			param.grad = torch.zeros_like(param)
-			# 			continue
-			# 		param.data.copy_(param.data - (self.meta_lr_sgd * param.grad.data))
-			# 		param.grad.zero_()
+			# Now calculate the gradients of the meta-weights
+			# Todo [ldery] - there is a memory-speed trade-off you can make here.
+			for key, (xs, ys) in batch.items():
+				result = self.run_model(xs, ys, model, group=key, reduct_='mean')
+				grads = torch.autograd.grad(result[0], model.parameters(), allow_unused=True)
+				dot_prod = 0
+				with torch.no_grad():
+					for idx_, (pname, param) in enumerate(new_model.named_parameters()):
+						if grads[idx_] is None:
+							assert 'fc' in pname, '{} - Module has none gradient which is invalid'.format(pname)
+							continue
+						if param.grad is None:
+							continue
+						dot_prod += (param.grad * grads[idx_]).sum()
 
-			# # calculate the gradient w.r.t primary data
-			# for primary_key, (xs, ys) in batch.items():
-			# 	results = self.run_model(xs, ys, new_model, group=primary_key, reduct_='mean')
-			# 	stats[primary_key][0] += results[0].item() * len(ys)
-			# 	stats[primary_key][1] += results[1].item()
-			# 	stats[primary_key][2] += len(ys)
-			# 	results[0].backward()
+					dot_prod = dot_prod.item()
 
-			# # Now calculate the gradients of the meta-weights
-			# # Todo [ldery] - there is a memory-speed trade-off you can make here.
-			# for key, (xs, ys) in group_batch.items():
-			# 	result = self.run_model(xs, ys, model, group=key, reduct_='mean')
-			# 	grads = torch.autograd.grad(result[0], model.parameters(), allow_unused=True)
-			# 	dot_prod = 0
-			# 	with torch.no_grad():
-			# 		for idx_, (pname, param) in enumerate(new_model.named_parameters()):
-			# 			if grads[idx_] is None:
-			# 				assert 'fc' in pname, '{} - Module has none gradient which is invalid'.format(pname)
-			# 				continue
-			# 			if param.grad is None:
-			# 				continue
-			# 			dot_prod += (param.grad * grads[idx_]).sum()
+				var_ = -self.meta_lr_sgd * (meta_weights[key]) * dot_prod
+				var_.backward()
 
-			# 		dot_prod = dot_prod.item()
+			# update the meta_var
+			with torch.no_grad():
+				norm_val = 0.0
+				for key in meta_weights.keys():
+					new_val = meta_weights[key] * torch.exp(- self.meta_lr_weights * meta_weights[key].grad)
+					norm_val += new_val.item()
+					meta_weights[key].copy_(new_val)
+					meta_weights[key].grad.zero_()
+				for key in meta_weights.keys():
+					meta_weights[key].div_(norm_val)
 
-			# 	var_ = -self.meta_lr_sgd * (sm_meta_weights[key]) * dot_prod
-			# 	var_.backward()
+			total_loss = self.run_batch(model, batch, stats, meta_weights)
+			if optim is not None:
+				total_loss.backward()  # backprop the accumulated gradient
+				optim.step()
 
-			# # update the meta_var
-			# with torch.no_grad():
-			# 	norm_val = 0.0
-			# 	for key in meta_weights.keys():
-			# 		new_val = meta_weights[key] * torch.exp(- self.meta_lr_weights * meta_weights[key].grad)
-			# 		norm_val += new_val.item()
-			# 		meta_weights[key].copy_(new_val)
-			# 		meta_weights[key].grad.zero_()
-			# 	for key in meta_weights.keys():
-			# 		meta_weights[key].div_(norm_val)
-			# update the gradients of the main model
-			# get the weighted losses
-			for key, (xs, ys) in group_batch.items():
-				results = self.run_model(xs, ys, model, group=key, reduct_='mean')
-				weighted_loss = sm_meta_weights[key].item() * results[0]
-				weighted_loss.backward()  # Accumulate the gradient so you don't hold on to graph
-
-			# do an optimize step
-			optim.step()
+			del new_model
 
 		summary = {}
 		for k, v in stats.items():
-			summary[k] = (v[0] / v[2], v[1] / v[2])
+			summary[k] = (v[0] / v[2], v[1].item() / v[2])
 		return summary
 
 	def model_exists(self, model, dataset, kwargs):
@@ -291,7 +302,8 @@ class Trainer(object):
 		# setup the meta-weights
 		if kwargs['learn_meta_weights']:
 			assert len(monitor_list) == 1, 'We can only learn meta-weights when there is 1 primary class'
-			inits = np.array([1.0 for _ in range(len(kwargs['classes']))]) # np.random.uniform(low=1.0, high=2.0, size=len(kwargs['classes']))
+			inits = np.array([1.0 for _ in range(len(kwargs['classes']))])
+			# np.random.uniform(low=1.0, high=2.0, size=len(kwargs['classes']))
 			inits = inits / sum(inits)
 			meta_weights = {class_: torch.tensor([inits[id_]]).float().cuda() for id_, class_ in enumerate(kwargs['classes'])}
 			for _, v in meta_weights.items():
@@ -304,9 +316,9 @@ class Trainer(object):
 			if not kwargs['learn_meta_weights']:
 				if alpha_gen is not None:
 					alpha_gen.prep_epoch_start(i)
-				tr_results = self.run_epoch(model, tr_iter, optim, alpha_generator=alpha_gen)
+				tr_results = self.run_epoch(model, tr_iter, optim, alpha_generator=alpha_gen, freeze_bn=kwargs['freeze_bn'])
 			else:
-				primary_iter = dataset._get_iterator(monitor_list, kwargs['batch_sz'], split=self.meta_split, shuffle=True)
+				primary_iter = dataset._get_iterator(monitor_list, kwargs['meta_batch_sz'], split=self.meta_split, shuffle=True)
 				tr_results = self.run_epoch_w_meta(model, tr_iter, optim, primary_iter, meta_weights, primary_keys=monitor_list)
 				# sm_meta_weights = get_softmax(meta_weights)
 				m_weights = {k: v.item() for k, v in meta_weights.items()}

@@ -44,7 +44,7 @@ def set_random_seed(seed):
 def train_model(
 					algo, dataset, opts, seed, chosen_classes,
 					monitor_classes, id_='direct_only', learn_meta_weights=False,
-					model=None, primary_class=None):
+					model=None, primary_class=None, freeze_bn=False):
 	set_random_seed(seed)
 	chkpt_path = os.path.join('m4m_cache', opts.exp_name, id_, str(seed))
 	if not os.path.exists(chkpt_path):
@@ -66,7 +66,8 @@ def train_model(
 							model, dataset, optim, lr_scheduler=lr_scheduler,
 							classes=chosen_classes, batch_sz=opts.batch_sz,
 							model_chkpt_fldr=chkpt_path, monitor_list=monitor_classes,
-							learn_meta_weights=learn_meta_weights, alpha_generator=alpha_gen
+							learn_meta_weights=learn_meta_weights, alpha_generator=alpha_gen,
+							meta_batch_sz=opts.meta_batch_sz, freeze_bn=freeze_bn
 						)
 	if alpha_gen is not None:
 		alpha_gen.viz_results(chkpt_path, group_aux=(not learn_meta_weights))
@@ -95,7 +96,8 @@ def main():
 				opts.train_epochs, opts.patience, meta_lr_weights=opts.meta_lr_weights,
 				meta_lr_sgd=opts.meta_lr_sgd, meta_split=opts.meta_split
 			)
-	chosen_set = list(cifar100_super_classes.keys())
+	chosen_set = list(cifar100_super_classes.keys())[:4]
+	chosen_set.append('people')
 	for seed in range(opts.num_runs):
 		print('Currently on {}/{}'.format(seed + 1, opts.num_runs))
 		set_random_seed(seed)
@@ -154,7 +156,10 @@ def main():
 								id_=this_id, learn_meta_weights=True, primary_class=main_class
 							)
 			chosen_classes, monitor_classes = [main_class], [main_class]
-			this_res, _ = train_model(algo, dataset, opts, seed, chosen_classes, monitor_classes, id_=this_id, model=model)
+			this_res, _ = train_model(
+							algo, dataset, opts, seed, chosen_classes, monitor_classes,
+							id_=this_id, model=model, freeze_bn=opts.freeze_bn
+						)
 			for k, v in this_res.items():
 				result_dict[k].append(v[1])
 
