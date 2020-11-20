@@ -57,7 +57,7 @@ def train_model(
 					)
 		model.cuda()
 	else:
-		model.add_head(all_classes, NUM_PER_SUPERCLASS)
+		model.add_heads(all_classes)
 	# Todo [ldery] - make sure future generators are compatible with multiple primary keys
 	alpha_gen = None if primary_class is None else get_alpha_generator(opts, primary_class, chosen_classes)
 	optim, lr_scheduler = algo.get_optim(model, opts)

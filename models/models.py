@@ -78,11 +78,13 @@ class Model(nn.Module):
 		elif fn_name == 'MSE':
 			return nn.MSELoss(reduction=reduction)
 
-	def forward(self, x, head_name=None):
-		if self.is_functional:
-			m_out = self.functional_(x, head_name=head_name)(*self.params)
-		else:
-			m_out = self.model(x, head_name=head_name)
+	def forward(self, x, head_name=None, body_only=False, head_only=False):
+		assert not (head_only and body_only), 'Cannot have both head only and body only enabled'
+		if body_only:
+			return self.model.apply_body(x)
+		elif head_only:
+			return self.model.appy_head(x, head_name=head_name)
+		out = self.model(x, head_name=head_name)
 		if self.loss_fn_name == 'BCE':
 			# We need to do a sigmoid if we're using binary labels
 			m_out = torch.sigmoid(m_out)
@@ -104,3 +106,6 @@ class WideResnet(Model):
 								)
 		self.model = WideResNet(depth, out_class_dict, widen_factor=widen_factor, dropRate=dropRate)
 		self.model.apply(weight_init('kaiming_normal'))
+
+	def add_heads(self, class_dict, is_cuda=True):
+		self.model.add_heads(class_dict, is_cuda=is_cuda)

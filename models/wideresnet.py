@@ -80,7 +80,14 @@ class WideResNet(nn.Module):
 			self.add_module("fc-{}".format(head_name), this_head)
 		self.nChannels = nChannels[3]
 
-	def forward(self, x, head_name=None):
+	def add_heads(self, class_dict, is_cuda=True):
+		for head_name, num_classes in class_dict.items():
+			this_head = nn.Linear(self.nChannels, num_classes)
+			if is_cuda:
+				this_head = this_head.cuda()
+			self.add_module("fc-{}".format(head_name), this_head)
+
+	def apply_body(self, x):
 		out = self.conv1(x)
 		out = self.block1(out)
 		out = self.block2(out)
@@ -88,6 +95,14 @@ class WideResNet(nn.Module):
 		out = self.relu(self.bn1(out))
 		out = F.avg_pool2d(out, 8)
 		out = out.view(-1, self.nChannels)
+		return out
+
+	def apply_head(self, out, head_name=None):
 		this_fc = getattr(self, "fc-{}".format(head_name), None)
 		assert this_fc is not None, 'Need to give a valid headname {}'.format(head_name)
 		return this_fc(out)
+
+	def forward(self, x, head_name=None):
+		out = self.apply_body(x)
+		return self.apply_head(out, head_name=head_name)
+
