@@ -82,6 +82,9 @@ class WideResNet(nn.Module):
 
 	def add_heads(self, class_dict, is_cuda=True):
 		for head_name, num_classes in class_dict.items():
+			this_head = getattr(self, "fc-{}".format(head_name), None)
+			if this_head is not None:
+				continue
 			this_head = nn.Linear(self.nChannels, num_classes)
 			if is_cuda:
 				this_head = this_head.cuda()

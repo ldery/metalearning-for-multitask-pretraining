@@ -83,8 +83,8 @@ class Model(nn.Module):
 		if body_only:
 			return self.model.apply_body(x)
 		elif head_only:
-			return self.model.appy_head(x, head_name=head_name)
-		out = self.model(x, head_name=head_name)
+			return self.model.apply_head(x, head_name=head_name)
+		m_out = self.model(x, head_name=head_name)
 		if self.loss_fn_name == 'BCE':
 			# We need to do a sigmoid if we're using binary labels
 			m_out = torch.sigmoid(m_out)
