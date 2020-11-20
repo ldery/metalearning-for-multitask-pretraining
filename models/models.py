@@ -18,9 +18,6 @@ from .wideresnet import WideResNet
 def add_model_opts(parser):
 	parser.add_argument('-init-method', type=str, default='xavier_unif', choices=['xavier_unif', 'kaiming_unif'])
 	parser.add_argument('-loss-fn', type=str, default='CE', choices=['CE', 'BCE', 'MSE'])
-	parser.add_argument('-model-type', type=str, choices=['MLP', 'WideResnet', 'SimpleCNN'], default='MLP')
-	# For the Linear Model
-	parser.add_argument('-layer-sizes', type=str, default='[784, 100, 10]')
 	# For WideResnet Model
 	parser.add_argument('-depth', type=int, default=22)
 	parser.add_argument('-widen-factor', type=int, default=4)
@@ -67,17 +64,10 @@ def weight_init(init_method):
 # Super-class encapsulating all model related functions
 class Model(nn.Module):
 	def __init__(
-					self, loss_name='CE', make_funct=False,
-					pca_layers=None, **kwargs
+					self, loss_name='CE'
 				):
 		super(Model, self).__init__()
-		# make the model functional so we can use jacobian-vector-product
-		self.make_funct = make_funct
 		self.loss_fn_name = loss_name
-		# the layers whose gradient we want to do a lowrank approx of
-		self.pca_layers = pca_layers
-		self.is_functional = make_funct
-		self.params, self.names = [], []
 		self.loss_fn = self.get_loss_fn(loss_name)
 
 	def get_loss_fn(self, fn_name, reduction='mean'):
@@ -87,58 +77,6 @@ class Model(nn.Module):
 			return nn.BCELoss(reduction=reduction)
 		elif fn_name == 'MSE':
 			return nn.MSELoss(reduction=reduction)
-
-	def param_shapes(self):
-		if hasattr(self, 'p_shapes'):
-			return self.p_shapes
-		self.p_shapes = [x.shape for x in self.parameters()]
-		return self.p_shapes
-
-	# Model needs to be in functional mode for us to compute JVP
-	def make_functional(self):
-		already_stripped = False
-		if len(self.params):
-			already_stripped = True
-			name_and_params = zip(self.names, self.params)
-		else:
-			name_and_params = list(self.named_parameters())
-		for name, p in name_and_params:
-			# strip the model of these attributes so it's purely functional
-			del_attr(self, name.split("."))
-			if not already_stripped:
-				self.names.append(name)
-				self.params.append(p)
-		if not already_stripped:
-			self.params = tuple(self.params)
-		return self.params, self.names
-
-	def parameters(self):
-		if self.is_functional and len(self.params):
-			return self.params
-		else:
-			return super(Model, self).parameters()
-
-	def named_parameters(self, recurse=True):
-		if self.is_functional and len(self.names):
-			return zip(self.names, self.params)
-		else:
-			return super(Model, self).named_parameters(recurse=recurse)
-
-	def functional_(self, inp_, head_name=None):
-		'''
-			head_name (str) : the name of the model heads to apply as final layer to this input
-		'''
-		loss_fn = self.get_loss_fn(self.loss_fn_name, reduction='none')
-
-		def fn(*params):
-			for name, p in zip(self.names, params):
-				set_attr(self, name.split("."), p)
-			if isinstance(inp_, tuple) or isinstance(inp_, list):
-				x, y = inp_
-				return loss_fn(self.model(x, head_name=head_name), y)
-			else:
-				return self.model(inp_, head_name=head_name)
-		return fn
 
 	def forward(self, x, head_name=None):
 		if self.is_functional:
@@ -156,31 +94,13 @@ class Model(nn.Module):
 		return self.loss_fn(outs, target)
 
 
-class MLP(Model):
-	def __init__(
-					self, layers, init_method='xavier_unif', loss_name='CE',
-					make_funct=False, pca_layers=None, dp_ratio=0.3):
-		super(MLP, self).__init__(
-									loss_name=loss_name,
-									make_funct=make_funct, pca_layers=pca_layers
-								)
-		sequence = []
-		for i in range(len(layers) - 1):
-			sequence.append(nn.Dropout(dp_ratio))
-			sequence.append(nn.Linear(layers[i], layers[i + 1]))
-			sequence.append(nn.ReLU())
-		self.model = nn.Sequential(*sequence[:-1])  # [:-1] to remove the last relu
-		self.model.apply(weight_init(init_method))
-
-
 class WideResnet(Model):
 	def __init__(
-					self, out_class_dict, depth, widen_factor, loss_name='CE',
-					make_funct=False, pca_layers=None, dropRate=0.0
+					self, out_class_dict, depth, widen_factor,
+					loss_name='CE', dropRate=0.0
 				):
 		super(WideResnet, self).__init__(
 									loss_name=loss_name,
-									make_funct=make_funct, pca_layers=pca_layers
 								)
 		self.model = WideResNet(depth, out_class_dict, widen_factor=widen_factor, dropRate=dropRate)
 		self.model.apply(weight_init('kaiming_normal'))
