@@ -30,20 +30,23 @@ def add_trainer_args(parser):
 	parser.add_argument('-patience', type=int, default=10)
 	parser.add_argument('-lr-patience', type=int, default=4)
 	parser.add_argument('-optimizer', type=str, default='Adam')
-	parser.add_argument('-lr', type=float, default=3e-4)
+	parser.add_argument('-lr', type=float, default=1e-3)
+	parser.add_argument('-ft-lr', type=float, default=5e-5)
 	parser.add_argument(
-		'-meta-lr-weights', type=float, default=1.0,
+		'-meta-lr-weights', type=float, default=1e-3,
 		help='Outer-loop lr for weights. Very important to tune'
 	)
 	# Don't make this too high if not the consecutive grads don't align much
-	parser.add_argument('-meta-lr-sgd', type=float, default=5e-3, help='Inner loop sgd lr. Very important to tune')
+	parser.add_argument('-meta-lr-sgd', type=float, default=1e-2, help='Inner loop sgd lr. Very important to tune')
 	parser.add_argument('-batch-sz', type=int, default=320)
-	parser.add_argument('-meta-batch-sz', type=int, default=16)
+	parser.add_argument('-ft-batch-sz', type=int, default=128)
+	parser.add_argument('-meta-batch-sz', type=int, default=32)
 	parser.add_argument('-chkpt-path', type=str, default='experiments')
 	parser.add_argument('-use-last-chkpt', action='store_true', help='Instead of using best, use last checkpoint')
 	parser.add_argument('-continue-from-last', action='store_true')
-	parser.add_argument('-meta-split', type=str, default='train', choices=['train', 'val'])
+	parser.add_argument('-meta-split', type=str, default='val', choices=['train', 'val'])
 	parser.add_argument('-freeze-bn', action='store_true', help='Freeze the BN layers after pre-training')
+	parser.add_argument('-alpha-update-algo', type=str, default='MoE', choices=['softmax', 'MoE'])
 
 
 def get_softmax(weights):
@@ -62,7 +65,7 @@ class Trainer(object):
 	def __init__(
 					self, train_epochs, patience,
 					meta_lr_weights=0.01, meta_lr_sgd=0.1,
-					meta_split='train'
+					meta_split='train', alpha_update_algo='MoE'
 				):
 		self.chkpt_every = 10  # save to checkpoint
 		self.train_epochs = train_epochs
@@ -71,9 +74,11 @@ class Trainer(object):
 		self.meta_lr_weights = meta_lr_weights
 		self.meta_lr_sgd = meta_lr_sgd
 		self.meta_split = meta_split
+		self.alpha_update_algo = alpha_update_algo
+		print('Using {} as the update algorithm'.format(self.alpha_update_algo))
 
 	def get_optim(self, model, opts, ft=False):
-		lr = opts.lr if not ft else opts.finetune_lr
+		lr = opts.lr if not ft else opts.ft_lr
 		if opts.optimizer == 'Adam':
 			optim = Adam(model.parameters(), lr=lr)
 		elif opts.optimizer == 'SGD':
@@ -185,14 +190,20 @@ class Trainer(object):
 			# We need to learn the updated meta-weights here
 			# Copy the model into a new model
 			new_model = deepcopy(model)
-			loss_ = self.run_batch(new_model, batch, None, meta_weights)
+			if self.alpha_update_algo == 'softmax':
+				sm_meta_weights = get_softmax(meta_weights)
+				loss_ = self.run_batch(new_model, batch, None, sm_meta_weights)
+			else:
+				loss_ = self.run_batch(new_model, batch, None, meta_weights)
 			loss_.backward()
 
 			# We can now take an SGD step here
 			# Take a gradient step in the new model
 			with torch.no_grad():
-				for param in new_model.parameters():
-					assert param.grad is not None, 'All parameters of the new model should have filled gradients'
+				for pname, param in new_model.named_parameters():
+					if param.grad is None:
+						continue
+					# assert param.grad is not None, 'All parameters of the new model should have filled gradients : {}'.format(pname)
 					param.data.copy_(param.data - (self.meta_lr_sgd * param.grad.data))
 					param.grad.zero_()
 
@@ -205,7 +216,10 @@ class Trainer(object):
 
 			# Now calculate the gradients of the meta-weights
 			# Todo [ldery] - there is a memory-speed trade-off you can make here.
-			for key, (xs, ys) in batch.items():
+			if self.alpha_update_algo == 'softmax':
+				sm_meta_weights = get_softmax(meta_weights)
+			for b_idx, (key, (xs, ys)) in enumerate(batch.items()):
+				meta_weights[key].grad.zero_()
 				result = self.run_model(xs, ys, model, group=key, reduct_='mean')
 				grads = torch.autograd.grad(result[0], model.parameters(), allow_unused=True)
 				dot_prod = 0
@@ -219,20 +233,29 @@ class Trainer(object):
 						dot_prod += (param.grad * grads[idx_]).sum()
 
 					dot_prod = dot_prod.item()
-
-				var_ = -self.meta_lr_sgd * (meta_weights[key]) * dot_prod
-				var_.backward()
+				if self.alpha_update_algo == 'softmax':
+					var_ = -self.meta_lr_sgd * (sm_meta_weights[key]) * dot_prod
+					var_.backward(retain_graph=(b_idx != (len(batch) - 1)))
+				else:
+					var_ = -self.meta_lr_sgd * (meta_weights[key]) * dot_prod
+					var_.backward()
 
 			# update the meta_var
 			with torch.no_grad():
 				norm_val = 0.0
 				for key in meta_weights.keys():
-					new_val = meta_weights[key] * torch.exp(- self.meta_lr_weights * meta_weights[key].grad)
-					norm_val += new_val.item()
+					if self.alpha_update_algo == 'softmax':
+						new_val = meta_weights[key] - (self.meta_lr_weights * meta_weights[key].grad)
+					elif self.alpha_update_algo == 'MoE':
+						new_val = meta_weights[key] * torch.exp(- self.meta_lr_weights * meta_weights[key].grad)
+						norm_val += new_val.item()
+					else:
+						assert '{} - Algo not implemented for updating alphas'.format(self.alpha_update_algo)
 					meta_weights[key].copy_(new_val)
 					meta_weights[key].grad.zero_()
-				for key in meta_weights.keys():
-					meta_weights[key].div_(norm_val)
+				if self.alpha_update_algo == 'MoE':
+					for key in meta_weights.keys():
+						meta_weights[key].div_(norm_val)
 
 			total_loss = self.run_batch(model, batch, stats, meta_weights)
 			if optim is not None:
@@ -302,8 +325,7 @@ class Trainer(object):
 		# setup the meta-weights
 		if kwargs['learn_meta_weights']:
 			assert len(monitor_list) == 1, 'We can only learn meta-weights when there is 1 primary class'
-			inits = np.array([1.0 for _ in range(len(kwargs['classes']))])
-			# np.random.uniform(low=1.0, high=2.0, size=len(kwargs['classes']))
+			inits = np.random.uniform(low=1.0, high=2.0, size=len(kwargs['classes']))
 			inits = inits / sum(inits)
 			meta_weights = {class_: torch.tensor([inits[id_]]).float().cuda() for id_, class_ in enumerate(kwargs['classes'])}
 			for _, v in meta_weights.items():
@@ -320,8 +342,10 @@ class Trainer(object):
 			else:
 				primary_iter = dataset._get_iterator(monitor_list, kwargs['meta_batch_sz'], split=self.meta_split, shuffle=True)
 				tr_results = self.run_epoch_w_meta(model, tr_iter, optim, primary_iter, meta_weights, primary_keys=monitor_list)
-				# sm_meta_weights = get_softmax(meta_weights)
-				m_weights = {k: v.item() for k, v in meta_weights.items()}
+				this_weights = meta_weights
+				if self.alpha_update_algo == 'softmax':
+					this_weights = get_softmax(meta_weights)
+				m_weights = {k: v.item() for k, v in this_weights.items()}
 
 			for k, v in tr_results.items():
 				self.metrics[k]['train'].append(v)
@@ -360,12 +384,15 @@ class Trainer(object):
 			print('--' * 30)
 
 			if alpha_gen is not None:
-				alpha_gen.record_epoch_end(i, np.mean(to_avg), meta_weights=m_weights)
+				alpha_gen.record_epoch_end(i, monitor_metric[-1], np.mean(to_avg), meta_weights=m_weights)
 			no_improvement = max(monitor_metric) not in monitor_metric[-self.patience:]
 			if i > self.patience and no_improvement:
 				break
 		# Load the best path
-		model.load_state_dict(torch.load(best_path))
+		if kwargs['use_last_chkpt']:
+			model.load_state_dict(torch.load(last_path))
+		else:
+			model.load_state_dict(torch.load(best_path))
 		test_iter = dataset._get_iterator(to_eval, kwargs['batch_sz'], split='test', shuffle=False)
 		test_results = self.run_epoch(model, test_iter, None)
 		print('Final Test Results - Best Epoch ', best_epoch)

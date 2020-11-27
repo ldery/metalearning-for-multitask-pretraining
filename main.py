@@ -22,6 +22,7 @@ def get_options():
 	parser.add_argument('-exp-name', default='test_run', type=str, help='name of this experiment')
 	parser.add_argument('-data-seed', type=int, default=1234, help='The seed to use for the dataset')
 	parser.add_argument('-mode', type=str, choices=['tgt_only', 'joint', 'pretrain', 'meta', 'pretrain_w_all'])
+	parser.add_argument('-num-aux-tasks', type=int, default=4)
 	add_model_opts(parser)
 	add_trainer_args(parser)
 	add_weighter_args(parser)
@@ -51,23 +52,29 @@ def train_model(
 		os.makedirs(chkpt_path)
 	all_classes = [*chosen_classes, *monitor_classes]
 	out_class_dict = {chosen_key: NUM_PER_SUPERCLASS for chosen_key in all_classes}
+	ft = False
+	use_last = False
 	if model is None:
+		batch_sz = opts.batch_sz
 		model = WideResnet(
 						out_class_dict, opts.depth, opts.widen_factor, dropRate=opts.dropRate,
 					)
 		model.cuda()
+		use_last = opts.use_last_chkpt
 	else:
-		all_classes = {k : NUM_PER_SUPERCLASS for k in all_classes}
+		batch_sz = opts.ft_batch_sz
+		ft = True
+		all_classes = {k: NUM_PER_SUPERCLASS for k in all_classes}
 		model.add_heads(all_classes)
 	# Todo [ldery] - make sure future generators are compatible with multiple primary keys
 	alpha_gen = None if primary_class is None else get_alpha_generator(opts, primary_class, chosen_classes)
-	optim, lr_scheduler = algo.get_optim(model, opts)
+	optim, lr_scheduler = algo.get_optim(model, opts, ft=ft)
 	metrics, test_results = algo.train(
 							model, dataset, optim, lr_scheduler=lr_scheduler,
-							classes=chosen_classes, batch_sz=opts.batch_sz,
+							classes=chosen_classes, batch_sz=batch_sz,
 							model_chkpt_fldr=chkpt_path, monitor_list=monitor_classes,
 							learn_meta_weights=learn_meta_weights, alpha_generator=alpha_gen,
-							meta_batch_sz=opts.meta_batch_sz, freeze_bn=freeze_bn
+							meta_batch_sz=opts.meta_batch_sz, freeze_bn=freeze_bn, use_last_chkpt=use_last
 						)
 	if alpha_gen is not None:
 		alpha_gen.viz_results(chkpt_path, group_aux=(not learn_meta_weights))
@@ -94,10 +101,15 @@ def main():
 	result_dict = defaultdict(list)
 	algo = Trainer(
 				opts.train_epochs, opts.patience, meta_lr_weights=opts.meta_lr_weights,
-				meta_lr_sgd=opts.meta_lr_sgd, meta_split=opts.meta_split
+				meta_lr_sgd=opts.meta_lr_sgd, meta_split=opts.meta_split,
+				alpha_update_algo=opts.alpha_update_algo
 			)
-	chosen_set = list(cifar100_super_classes.keys())[:4]
-	chosen_set.append('people')
+	chosen_set = list(cifar100_super_classes.keys())
+	if chosen_set.index('people') < opts.num_aux_tasks:
+		opts.num_aux_tasks += 1
+	chosen_set = chosen_set[:opts.num_aux_tasks]
+	if 'people' not in chosen_set:
+		chosen_set.append('people')
 	for seed in range(opts.num_runs):
 		print('Currently on {}/{}'.format(seed + 1, opts.num_runs))
 		set_random_seed(seed)
@@ -138,6 +150,8 @@ def main():
 											algo, dataset, opts, seed, chosen_set,
 											monitor_classes, id_=this_id, primary_class=main_class
 										)
+			for k, v in this_res.items():
+				result_dict['pre_ft.{}'.format(k)].append(v[1])
 			# for main_class in chosen_set:
 				# Now we do the training based on the class specific data.
 			new_model = deepcopy(model)
@@ -155,6 +169,8 @@ def main():
 								algo, dataset, opts, seed, chosen_set, monitor_classes,
 								id_=this_id, learn_meta_weights=True, primary_class=main_class
 							)
+			for k, v in this_res.items():
+				result_dict['pre_ft.{}'.format(k)].append(v[1])
 			chosen_classes, monitor_classes = [main_class], [main_class]
 			this_res, _ = train_model(
 							algo, dataset, opts, seed, chosen_classes, monitor_classes,

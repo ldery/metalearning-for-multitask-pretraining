@@ -7,7 +7,7 @@ import pdb
 def add_weighter_args(parser):
 	parser.add_argument(
 							'-weight-strgy', type=str, default='default',
-							choices=['default', 'alt', 'warm_up_down']
+							choices=['default', 'alt', 'warm_up_down', 'phase_in']
 	)
 	# add arguments for alternating
 	parser.add_argument('-alt-freq', type=int, default=1, help='If using alt strategy, how often to alternate')
@@ -31,6 +31,11 @@ def get_alpha_generator(opts, prim_key, aux_keys):
 					prim_first=(opts.prim_start == 0), end_val=opts.end_val,
 					reset_every=opts.alt_freq
 				)
+	elif weight_strgy == 'phase_in':
+		return PhaseIn(
+					prim_key, aux_keys, init_val=opts.init_val,
+					prim_start=opts.prim_start, max_epochs=opts.train_epochs
+				)
 	else:
 		assert 'Invalid Value for Weighting strategy - {}'.format(weight_strgy)
 
@@ -51,16 +56,16 @@ class Weighter(object):
 	def prep_epoch_start(self, epoch, **kwargs):
 		pass
 
-	def record_epoch_end(self, epoch, stat, **kwargs):
+	def record_epoch_end(self, epoch, val_stat,  test_stat, **kwargs):
 		if kwargs['meta_weights'] is None:
 			entry = [v for _, v in self.weights.items()]
 		else:
 			entry = [v for _, v in kwargs['meta_weights'].items()]
 		# Place the statistic to record in the final position
-		entry.append(stat)
+		entry.extend([val_stat, test_stat])
 		self.result_logs.append(entry)
 
-	def viz_results(self, save_loc, metric_name='Test Accuracy', group_aux=True):
+	def viz_results(self, save_loc, group_aux=True):
 		to_viz = np.array(self.result_logs)
 		all_keys = list(self.weights.keys())
 		prim_idx = all_keys.index(self.prim_key)
@@ -78,8 +83,10 @@ class Weighter(object):
 		ax.set_ylabel('Weighting')
 		ax.legend()
 		ax2 = ax.twinx()
-		ax2.plot(range(len(prim_vals)), to_viz[:, -1], color='tab:red', label=metric_name)
-		ax2.set_ylabel(metric_name, color='tab:red')
+		ax2.plot(range(len(prim_vals)), to_viz[:, -1], color='tab:red', label='Test Accuracy')
+		ax2.plot(range(len(prim_vals)), to_viz[:, -2], color='tab:cyan', label='Val Accuracy')
+		ax2.set_ylabel('Test/Val Accuracy', color='tab:red')
+		ax2.legend(loc='upper left')
 		plt.savefig('{}/weighting_vrs_stat.png'.format(save_loc))
 
 
@@ -108,6 +115,22 @@ class AlternatingWeighter(Weighter):
 		else:
 			aux_val = 0.0
 			prim_val = self.init_val
+		self.weights = {k: aux_val for k in self.aux_keys}
+		self.weights[self.prim_key] = prim_val
+
+class PhaseIn(Weighter):
+	def __init__(self, prim_key, aux_keys, init_val=1.0, prim_start=10, max_epochs=100):
+		super(PhaseIn, self).__init__(prim_key, aux_keys, init_val=init_val)
+		self.prim_start = prim_start
+		self.delta = init_val / (max_epochs - prim_start)
+
+	def prep_epoch_start(self, epoch, **kwargs):
+		if (epoch < self.prim_start):
+			prim_val = 0.0
+			aux_val = self.init_val
+		else:
+			prim_val = (epoch - self.prim_start) * self.delta
+			aux_val = self.init_val - prim_val
 		self.weights = {k: aux_val for k in self.aux_keys}
 		self.weights[self.prim_key] = prim_val
 
