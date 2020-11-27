@@ -3,7 +3,6 @@
 auxTasks=$1
 lr=$2
 
-
 expname='default_ntasks='$auxTasks'-lr.'$lr
 echo 'Default ' $expname ' and save file is ' $expname'.txt'
 python -u main.py -lr $lr -num-aux-tasks $auxTasks -mode pretrain_w_all -num-runs 3 -weight-strgy default -exp-name $expname &> run_logs/$expname'.txt'
@@ -38,3 +37,22 @@ echo 'Alternating With Freq 10 ' $expname ' and save file is ' $expname'.txt'
 python -u main.py -lr $lr -num-aux-tasks $auxTasks -mode pretrain_w_all -num-runs 3 -weight-strgy alt -alt-freq 10 -exp-name $expname &> run_logs/$expname'.txt'
 
 # Including Phase in-and-out
+primstart=10
+expname='phase-in-'$primstart'_ntasks='$auxTasks'-lr.'$lr
+echo 'Phase In ' $expname ' and save file is ' $expname'.txt'
+python -u main.py -prim-start $primstart -lr $lr -num-aux-tasks $auxTasks -mode pretrain_w_all -num-runs 1 -weight-strgy phase_in -exp-name $expname #&> run_logs/$expname'.txt'
+
+primstart=20
+expname='phase-in-'$primstart'_ntasks='$auxTasks'-lr.'$lr
+echo 'Phase In ' $expname ' and save file is ' $expname'.txt'
+python -u main.py -prim-start $primstart -lr $lr -num-aux-tasks $auxTasks -mode pretrain_w_all -num-runs 3 -weight-strgy phase_in -exp-name $expname &> run_logs/$expname'.txt'
+
+primstart=40
+expname='phase-in-'$primstart'_ntasks='$auxTasks'-lr.'$lr
+echo 'Phase In ' $expname ' and save file is ' $expname'.txt'
+python -u main.py -prim-start $primstart -lr $lr -num-aux-tasks $auxTasks -mode pretrain_w_all -num-runs 3 -weight-strgy phase_in -exp-name $expname &> run_logs/$expname'.txt'
+
+# Include regular pre-training
+expname='regular_pretrain-lr.'$lr
+echo 'Regular Pretraining ' $expname ' and save file is ' $expname'.txt'
+python -u main.py -lr $lr -num-aux-tasks $auxTasks -mode pretrain -num-runs 1 -exp-name $expname -use-last-chkpt #&> run_logs/$expname'.txt'
