@@ -81,7 +81,7 @@ class Weighter(object):
 				break
 		ax.set_xlabel('Epoch')
 		ax.set_ylabel('Weighting')
-		ax.legend()
+		ax.legend(loc='lower left')
 		ax2 = ax.twinx()
 		ax2.plot(range(len(prim_vals)), to_viz[:, -1], color='tab:red', label='Test Accuracy')
 		ax2.plot(range(len(prim_vals)), to_viz[:, -2], color='tab:cyan', label='Val Accuracy')

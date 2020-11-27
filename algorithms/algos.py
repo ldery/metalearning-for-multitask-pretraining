@@ -27,7 +27,7 @@ from copy import deepcopy
 # NOTE [ldery] - put a freeze on adding anymore hyper-params until the ones you have are understood !
 def add_trainer_args(parser):
 	parser.add_argument('-train-epochs', type=int, default=50)
-	parser.add_argument('-patience', type=int, default=10)
+	parser.add_argument('-patience', type=int, default=50)
 	parser.add_argument('-lr-patience', type=int, default=4)
 	parser.add_argument('-optimizer', type=str, default='Adam')
 	parser.add_argument('-lr', type=float, default=1e-3)

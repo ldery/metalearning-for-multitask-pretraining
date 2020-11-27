@@ -37,3 +37,4 @@ expname='alt_10_ntasks='$auxTasks'-lr.'$lr
 echo 'Alternating With Freq 10 ' $expname ' and save file is ' $expname'.txt'
 python -u main.py -lr $lr -num-aux-tasks $auxTasks -mode pretrain_w_all -num-runs 3 -weight-strgy alt -alt-freq 10 -exp-name $expname &> run_logs/$expname'.txt'
 
+# Including Phase in-and-out
