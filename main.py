@@ -131,6 +131,8 @@ def main():
 		elif opts.mode == 'pretrain':
 			# 3. Pretrain with other tasks. Finetune on main task
 			for main_class in chosen_set:
+				if main_class != 'people':
+					continue
 				this_id = "pretr_{}".format(main_class)
 				monitor_classes = [x for x in chosen_set if x != main_class]
 				this_chosen = monitor_classes
