@@ -26,7 +26,7 @@ from copy import deepcopy
 
 # NOTE [ldery] - put a freeze on adding anymore hyper-params until the ones you have are understood !
 def add_trainer_args(parser):
-	parser.add_argument('-train-epochs', type=int, default=100)
+	parser.add_argument('-train-epochs', type=int, default=50)
 	parser.add_argument('-patience', type=int, default=10)
 	parser.add_argument('-lr-patience', type=int, default=4)
 	parser.add_argument('-optimizer', type=str, default='Adam')
@@ -325,11 +325,17 @@ class Trainer(object):
 		# setup the meta-weights
 		if kwargs['learn_meta_weights']:
 			assert len(monitor_list) == 1, 'We can only learn meta-weights when there is 1 primary class'
-			inits = np.random.uniform(low=1.0, high=2.0, size=len(kwargs['classes']))
+			inits = np.random.normal(size=len(kwargs['classes']))
+			inits = inits - min(inits) + (1.0 / len(kwargs['classes']))  # Make sure all are positive
 			inits = inits / sum(inits)
 			meta_weights = {class_: torch.tensor([inits[id_]]).float().cuda() for id_, class_ in enumerate(kwargs['classes'])}
 			for _, v in meta_weights.items():
 				v.requires_grad = True
+			if self.alpha_update_algo == 'softmax':
+				this_weights = get_softmax(meta_weights)
+				pprint(this_weights)
+			else:
+				pprint(meta_weights)
 		to_eval = kwargs['classes']
 		alpha_gen = kwargs['alpha_generator']
 		m_weights = None
