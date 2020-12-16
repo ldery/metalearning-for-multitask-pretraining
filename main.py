@@ -24,6 +24,7 @@ def get_options():
 	parser.add_argument('-mode', type=str, choices=['tgt_only', 'joint', 'pretrain', 'meta', 'pretrain_w_all'])
 	parser.add_argument('-num-aux-tasks', type=int, default=4)
 	parser.add_argument('-use-random', action='store_true')
+	parser.add_argument('-use-noise', action='store_true')
 	add_model_opts(parser)
 	add_trainer_args(parser)
 	add_weighter_args(parser)
@@ -113,6 +114,8 @@ def main():
 		chosen_set.append('people')
 		if opts.use_random:
 			chosen_set.append('rand_people')
+		if opts.use_noise:
+			chosen_set.aappend('noise_people')
 	for seed in range(opts.num_runs):
 		print('Currently on {}/{}'.format(seed + 1, opts.num_runs))
 		set_random_seed(seed)
@@ -176,7 +179,6 @@ def main():
 							)
 			for k, v in this_res.items():
 				result_dict['pre_ft.{}'.format(k)].append(v[1])
-			continue
 			chosen_classes, monitor_classes = [main_class], [main_class]
 			this_res, _ = train_model(
 							algo, dataset, opts, seed, chosen_classes, monitor_classes,
