@@ -23,6 +23,7 @@ def get_options():
 	parser.add_argument('-data-seed', type=int, default=1234, help='The seed to use for the dataset')
 	parser.add_argument('-mode', type=str, choices=['tgt_only', 'joint', 'pretrain', 'meta', 'pretrain_w_all'])
 	parser.add_argument('-num-aux-tasks', type=int, default=4)
+	parser.add_argument('-use-random', action='store_true')
 	add_model_opts(parser)
 	add_trainer_args(parser)
 	add_weighter_args(parser)
@@ -110,6 +111,8 @@ def main():
 	chosen_set = chosen_set[:opts.num_aux_tasks]
 	if 'people' not in chosen_set:
 		chosen_set.append('people')
+		if opts.use_random:
+			chosen_set.append('rand_people')
 	for seed in range(opts.num_runs):
 		print('Currently on {}/{}'.format(seed + 1, opts.num_runs))
 		set_random_seed(seed)
@@ -173,6 +176,7 @@ def main():
 							)
 			for k, v in this_res.items():
 				result_dict['pre_ft.{}'.format(k)].append(v[1])
+			continue
 			chosen_classes, monitor_classes = [main_class], [main_class]
 			this_res, _ = train_model(
 							algo, dataset, opts, seed, chosen_classes, monitor_classes,
