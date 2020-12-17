@@ -84,7 +84,10 @@ class CIFAR100:
 		iter_idx_dict = defaultdict(list)
 		max_iters = -1
 		for class_ in classes:
-			data_ = chosen_dict[class_]
+			if ('rand' in class_) or ('noise' in class_):
+				continue
+			class_name = class_
+			data_ = chosen_dict[class_name]
 			if shuffle:
 				idxs = [np.random.permutation(len(x)) for x in data_]
 			else:
@@ -103,15 +106,25 @@ class CIFAR100:
 			batch_dict = {}
 			num_iters += 1
 			for class_ in classes:
-				data_ = chosen_dict[class_]
+				if ('rand' in class_) or ('noise' in class_):
+					continue
+				class_name = class_
+				data_ = chosen_dict[class_name]
 				idxs = iter_idx_dict[class_]
 				xs, ys = [], []
-				# Todo [ldery] = need to think about this - we're getting more data than supposed to
 				for id_, vals in enumerate(idxs):
 					xs.extend([data_[id_][i] for i in vals[:per_sub_class]])
 					ys.extend([id_ for _ in range(per_sub_class)])
 					idxs[id_] = vals[per_sub_class:]
 				xs, ys = torch.stack(xs).cuda(), torch.tensor(ys).cuda()
+				rand_ = "rand_{}".format(class_)
+				if rand_ in classes:
+					rand_perm = np.random.permutation(len(ys))
+					batch_dict[rand_] = (xs.clone().detach(), ys.clone().detach()[rand_perm])
+				noise_ = "noise_{}".format(class_)
+				if noise_ in classes:
+					noisy_xs = torch.randn_like(xs)
+					batch_dict[noise_] = (noisy_xs, ys.clone().detach())
 				batch_dict[class_] = (xs, ys)
 			yield batch_dict
 			if num_iters == max_iters:
