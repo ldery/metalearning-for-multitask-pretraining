@@ -35,7 +35,7 @@ def add_trainer_args(parser):
 	parser.add_argument(
 		'-meta-lr-weights', type=float, default=1e-3,
 		help='Outer-loop lr for weights. Very important to tune'
-	)
+	) # If using cosine instead of dot prod - cross validate in log-space
 	# Don't make this too high if not the consecutive grads don't align much
 	parser.add_argument('-meta-lr-sgd', type=float, default=1e-2, help='Inner loop sgd lr. Very important to tune')
 	parser.add_argument('-batch-sz', type=int, default=320)
@@ -230,6 +230,7 @@ class Trainer(object):
 			if self.alpha_update_algo == 'softmax':
 				sm_meta_weights = get_softmax(meta_weights)
 			max_abs_dp = 0.0
+			new_params_norm, set_new_params_norm = 0.0, True
 			for b_idx, (key, (xs, ys)) in enumerate(batch.items()):
 				if meta_weights[key].grad is None:
 					meta_weights[key].grad = torch.zeros_like(meta_weights[key])
@@ -239,7 +240,7 @@ class Trainer(object):
 					group = group.split('_')[-1]
 				result = self.run_model(xs, ys, model, group=group, reduct_='mean')
 				grads = torch.autograd.grad(result[0], model.parameters(), allow_unused=True)
-				dot_prod = 0.0
+				dot_prod, this_aux_norm = 0.0, 0.0
 				with torch.no_grad():
 					for idx_, (pname, param) in enumerate(new_model.named_parameters()):
 						if grads[idx_] is None:
@@ -248,7 +249,12 @@ class Trainer(object):
 						if param.grad is None:
 							continue
 						dot_prod += (param.grad * grads[idx_]).sum()
-					dot_prod = dot_prod.item()
+						this_aux_norm += (grads[idx_]**2).sum()
+						if set_new_params_norm:
+							new_params_norm += (param.grad**2).sum()
+					new_params_norm, set_new_params_norm = np.sqrt(new_params_norm.item()), False
+					this_aux_norm = np.sqrt(this_aux_norm.item())
+					dot_prod = dot_prod.item() / (new_params_norm * this_aux_norm)
 				# Perform Gradient clipping here
 				if self.alpha_update_algo == 'softmax':
 					var_ = -sm_meta_weights[key] * dot_prod * self.meta_lr_sgd
@@ -277,16 +283,14 @@ class Trainer(object):
 			total_loss = self.run_batch(model, batch, stats, meta_weights)
 			if optim is not None:
 				total_loss.backward()  # backprop the accumulated gradient
+				torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
 				optim.step()
-
 			del new_model
 
 		summary = {}
 		for k, v in stats.items():
 			summary[k] = (v[0] / v[2], v[1].item() / v[2])
 		print({k: np.mean(v[-start_:]) for k, v in self.dp_stats.items()})
-		
-		
 		return summary
 
 	def model_exists(self, model, dataset, kwargs):
