@@ -40,7 +40,11 @@ def add_trainer_args(parser):
 	parser.add_argument('-meta-lr-sgd', type=float, default=1e-2, help='Inner loop sgd lr. Very important to tune')
 	parser.add_argument('-batch-sz', type=int, default=320)
 	parser.add_argument('-ft-batch-sz', type=int, default=128)
-	parser.add_argument('-meta-batch-sz', type=int, default=32)
+	parser.add_argument(
+							'-meta-batch-sz', type=int, default=64,
+							help='Size of the meta-batch to use. This is actually really important'
+							', using larger values reduces the update variance and makes algo more stable'
+	)
 	parser.add_argument('-chkpt-path', type=str, default='experiments')
 	parser.add_argument('-use-last-chkpt', action='store_true', help='Instead of using best, use last checkpoint')
 	parser.add_argument('-continue-from-last', action='store_true')
@@ -131,7 +135,7 @@ class Trainer(object):
 			total_loss = self.run_batch(model, batch, stats, alpha_generator)
 			if optim is not None:
 				total_loss.backward()  # backprop the accumulated gradient
-				# torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
+				torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
 				optim.step()
 
 		summary = {}
@@ -157,7 +161,10 @@ class Trainer(object):
 		alpha_sum = 0.0
 		for key, pos_pair in key_boundaries.items():
 			this_out = shared_out[pos_pair[0]:pos_pair[1], :]
-			m_out = model(this_out, head_name=key, head_only=True)
+			head_name = key
+			if ('rand' in key) or ('noise' in key):
+				head_name = head_name.split('_')[-1]
+			m_out = model(this_out, head_name=head_name, head_only=True)
 			loss_ = loss_fn(m_out, pos_pair[-1])
 			if alpha_generator is not None:
 				alpha_sum += alpha_generator[key]
@@ -180,10 +187,12 @@ class Trainer(object):
 		loss_fn = model.get_loss_fn(model.loss_fn_name, reduction='mean')
 		primary_batches = [batch for batch in primary_iter]
 		counter = 0
+		if not hasattr(self, 'dp_stats'):
+			self.dp_stats = defaultdict(list)
+		start_ = len(self.dp_stats['people'])
 		for batch in group_iter:
 			# We do not have enough samples to continue, so wrap around
 			counter = counter % len(primary_batches)
-
 			if optim is not None:
 				optim.zero_grad()
 
@@ -203,7 +212,8 @@ class Trainer(object):
 				for pname, param in new_model.named_parameters():
 					if param.grad is None:
 						continue
-					# assert param.grad is not None, 'All parameters of the new model should have filled gradients : {}'.format(pname)
+					# assert param.grad is not None
+					#'All parameters of the new model should have filled gradients : {}'.format(pname)
 					param.data.copy_(param.data - (self.meta_lr_sgd * param.grad.data))
 					param.grad.zero_()
 
@@ -211,6 +221,7 @@ class Trainer(object):
 			prim_batch = primary_batches[counter]
 			counter += 1
 			for primary_key, (xs, ys) in prim_batch.items():
+				assert 'rand' not in primary_key, 'The primary key is wrong : {}'.format(primary_key)
 				results = self.run_model(xs, ys, new_model, group=primary_key, reduct_='mean')
 				results[0].backward()
 
@@ -218,11 +229,17 @@ class Trainer(object):
 			# Todo [ldery] - there is a memory-speed trade-off you can make here.
 			if self.alpha_update_algo == 'softmax':
 				sm_meta_weights = get_softmax(meta_weights)
+			max_abs_dp = 0.0
 			for b_idx, (key, (xs, ys)) in enumerate(batch.items()):
+				if meta_weights[key].grad is None:
+					meta_weights[key].grad = torch.zeros_like(meta_weights[key])
 				meta_weights[key].grad.zero_()
-				result = self.run_model(xs, ys, model, group=key, reduct_='mean')
+				group = key
+				if ('rand' in group) or ('noise' in group):
+					group = group.split('_')[-1]
+				result = self.run_model(xs, ys, model, group=group, reduct_='mean')
 				grads = torch.autograd.grad(result[0], model.parameters(), allow_unused=True)
-				dot_prod = 0
+				dot_prod = 0.0
 				with torch.no_grad():
 					for idx_, (pname, param) in enumerate(new_model.named_parameters()):
 						if grads[idx_] is None:
@@ -231,15 +248,15 @@ class Trainer(object):
 						if param.grad is None:
 							continue
 						dot_prod += (param.grad * grads[idx_]).sum()
-
 					dot_prod = dot_prod.item()
+				# Perform Gradient clipping here
 				if self.alpha_update_algo == 'softmax':
-					var_ = -self.meta_lr_sgd * (sm_meta_weights[key]) * dot_prod
+					var_ = -sm_meta_weights[key] * dot_prod * self.meta_lr_sgd
 					var_.backward(retain_graph=(b_idx != (len(batch) - 1)))
 				else:
-					var_ = -self.meta_lr_sgd * (meta_weights[key]) * dot_prod
+					var_ = -meta_weights[key] * dot_prod * self.meta_lr_sgd
 					var_.backward()
-
+				self.dp_stats[key].append(dot_prod)
 			# update the meta_var
 			with torch.no_grad():
 				norm_val = 0.0
@@ -247,7 +264,8 @@ class Trainer(object):
 					if self.alpha_update_algo == 'softmax':
 						new_val = meta_weights[key] - (self.meta_lr_weights * meta_weights[key].grad)
 					elif self.alpha_update_algo == 'MoE':
-						new_val = meta_weights[key] * torch.exp(- self.meta_lr_weights * meta_weights[key].grad)
+						weight_ = torch.exp(-self.meta_lr_weights * meta_weights[key].grad)
+						new_val = meta_weights[key] * weight_
 						norm_val += new_val.item()
 					else:
 						assert '{} - Algo not implemented for updating alphas'.format(self.alpha_update_algo)
@@ -256,7 +274,6 @@ class Trainer(object):
 				if self.alpha_update_algo == 'MoE':
 					for key in meta_weights.keys():
 						meta_weights[key].div_(norm_val)
-
 			total_loss = self.run_batch(model, batch, stats, meta_weights)
 			if optim is not None:
 				total_loss.backward()  # backprop the accumulated gradient
@@ -267,6 +284,9 @@ class Trainer(object):
 		summary = {}
 		for k, v in stats.items():
 			summary[k] = (v[0] / v[2], v[1].item() / v[2])
+		print({k: np.mean(v[-start_:]) for k, v in self.dp_stats.items()})
+		
+		
 		return summary
 
 	def model_exists(self, model, dataset, kwargs):
@@ -325,7 +345,14 @@ class Trainer(object):
 		# setup the meta-weights
 		if kwargs['learn_meta_weights']:
 			assert len(monitor_list) == 1, 'We can only learn meta-weights when there is 1 primary class'
-			inits = np.random.normal(size=len(kwargs['classes']))
+# 			inits = np.random.normal(scale=2.0, size=len(kwargs['classes']))
+			inits, idx_ = [], 0
+			for idx, k in enumerate(kwargs['classes']):
+				val_ = np.random.normal(size=1)[0]
+				if k == 'people':
+					idx_ = idx
+				inits.append(val_)
+			inits[idx_] -= 2.0
 			inits = inits - min(inits) + (1.0 / len(kwargs['classes']))  # Make sure all are positive
 			inits = inits / sum(inits)
 			meta_weights = {class_: torch.tensor([inits[id_]]).float().cuda() for id_, class_ in enumerate(kwargs['classes'])}
@@ -339,6 +366,14 @@ class Trainer(object):
 		to_eval = kwargs['classes']
 		alpha_gen = kwargs['alpha_generator']
 		m_weights = None
+		
+		if alpha_gen is not None and kwargs['learn_meta_weights']:
+			this_weights = meta_weights
+			if self.alpha_update_algo == 'softmax':
+				this_weights = get_softmax(meta_weights)
+			m_weights = {k: v.item() for k, v in this_weights.items()}
+			alpha_gen.record_epoch_end(-1, 0, 0, meta_weights=m_weights)
+		
 		for i in range(self.train_epochs):
 			tr_iter = dataset._get_iterator(kwargs['classes'], kwargs['batch_sz'], split='train', shuffle=True)
 			if not kwargs['learn_meta_weights']:
@@ -394,6 +429,7 @@ class Trainer(object):
 			no_improvement = max(monitor_metric) not in monitor_metric[-self.patience:]
 			if i > self.patience and no_improvement:
 				break
+		pickle.dump(self.dp_stats, open('dp_stats1.pkl', 'wb'))
 		# Load the best path
 		if kwargs['use_last_chkpt']:
 			model.load_state_dict(torch.load(last_path))
