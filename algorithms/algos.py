@@ -229,8 +229,6 @@ class Trainer(object):
 			# Todo [ldery] - there is a memory-speed trade-off you can make here.
 			if self.alpha_update_algo == 'softmax':
 				sm_meta_weights = get_softmax(meta_weights)
-			max_abs_dp = 0.0
-			new_params_norm, set_new_params_norm = 0.0, True
 			for b_idx, (key, (xs, ys)) in enumerate(batch.items()):
 				if meta_weights[key].grad is None:
 					meta_weights[key].grad = torch.zeros_like(meta_weights[key])
@@ -240,7 +238,7 @@ class Trainer(object):
 					group = group.split('_')[-1]
 				result = self.run_model(xs, ys, model, group=group, reduct_='mean')
 				grads = torch.autograd.grad(result[0], model.parameters(), allow_unused=True)
-				dot_prod, this_aux_norm = 0.0, 0.0
+				dot_prod = 0.0
 				with torch.no_grad():
 					for idx_, (pname, param) in enumerate(new_model.named_parameters()):
 						if grads[idx_] is None:
@@ -249,12 +247,7 @@ class Trainer(object):
 						if param.grad is None:
 							continue
 						dot_prod += (param.grad * grads[idx_]).sum()
-						this_aux_norm += (grads[idx_]**2).sum()
-						if set_new_params_norm:
-							new_params_norm += (param.grad**2).sum()
-					new_params_norm, set_new_params_norm = np.sqrt(new_params_norm.item()), False
-					this_aux_norm = np.sqrt(this_aux_norm.item())
-					dot_prod = dot_prod.item() / (new_params_norm * this_aux_norm)
+					dot_prod = dot_prod.item()
 				# Perform Gradient clipping here
 				if self.alpha_update_algo == 'softmax':
 					var_ = -sm_meta_weights[key] * dot_prod * self.meta_lr_sgd
@@ -290,7 +283,7 @@ class Trainer(object):
 		summary = {}
 		for k, v in stats.items():
 			summary[k] = (v[0] / v[2], v[1].item() / v[2])
-		print({k: np.mean(v[-start_:]) for k, v in self.dp_stats.items()})
+# 		print({k: np.mean(v[-start_:]) for k, v in self.dp_stats.items()})
 		return summary
 
 	def model_exists(self, model, dataset, kwargs):
@@ -433,7 +426,8 @@ class Trainer(object):
 			no_improvement = max(monitor_metric) not in monitor_metric[-self.patience:]
 			if i > self.patience and no_improvement:
 				break
-		pickle.dump(self.dp_stats, open('dp_stats1.pkl', 'wb'))
+		# Save the dot products for later analysis
+		pickle.dump(self.dp_stats, open(os.path.join(chkpt_path, 'dp_stats.pkl'), 'wb'))
 		# Load the best path
 		if kwargs['use_last_chkpt']:
 			model.load_state_dict(torch.load(last_path))

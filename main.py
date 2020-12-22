@@ -179,21 +179,21 @@ def main():
 							)
 			for k, v in this_res.items():
 				result_dict['pre_ft.{}'.format(k)].append(v[1])
-# 			chosen_classes, monitor_classes = [main_class], [main_class]
-# 			this_res, _ = train_model(
-# 							algo, dataset, opts, seed, chosen_classes, monitor_classes,
-# 							id_=this_id, model=model, freeze_bn=opts.freeze_bn
-# 						)
-# 			for k, v in this_res.items():
-# 				result_dict[k].append(v[1])
+			chosen_classes, monitor_classes = [main_class], [main_class]
+			this_res, _ = train_model(
+							algo, dataset, opts, seed, chosen_classes, monitor_classes,
+							id_=this_id, model=model, freeze_bn=opts.freeze_bn
+						)
+			for k, v in this_res.items():
+				result_dict[k].append(v[1])
 
-# 			print('Results for epoch : {}/{}'.format(seed + 1, opts.num_runs))
-# 			for k, v in result_dict.items():
-# 				print("{:30s} = {:.3f} +/- {:.3f}".format(k, np.mean(v), np.std(v)))
-# 			# Saving intermediate results since this takes quite some-time to run
-# 			save_path = os.path.join('m4m_cache', opts.exp_name, "results.pkl")
-# 			with open(save_path, 'wb') as handle:
-# 				pickle.dump(result_dict, handle)
+			print('Results for epoch : {}/{}'.format(seed + 1, opts.num_runs))
+			for k, v in result_dict.items():
+				print("{:30s} = {:.3f} +/- {:.3f}".format(k, np.mean(v), np.std(v)))
+			# Saving intermediate results since this takes quite some-time to run
+			save_path = os.path.join('m4m_cache', opts.exp_name, "results.pkl")
+			with open(save_path, 'wb') as handle:
+				pickle.dump(result_dict, handle)
 
 	for k, v in result_dict.items():
 		print("{:30s} = {:.3f} +/- {:.3f}".format(k, np.mean(v), np.std(v)))
