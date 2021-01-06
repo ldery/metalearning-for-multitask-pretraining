@@ -50,7 +50,7 @@ def add_trainer_args(parser):
 	parser.add_argument('-continue-from-last', action='store_true')
 	parser.add_argument('-meta-split', type=str, default='val', choices=['train', 'val'])
 	parser.add_argument('-freeze-bn', action='store_true', help='Freeze the BN layers after pre-training')
-	parser.add_argument('-alpha-update-algo', type=str, default='MoE', choices=['softmax', 'MoE'])
+	parser.add_argument('-alpha-update-algo', type=str, default='MoE', choices=['softmax', 'MoE', 'linear'])
 
 
 def get_softmax(weights):
@@ -260,17 +260,19 @@ class Trainer(object):
 			with torch.no_grad():
 				norm_val = 0.0
 				for key in meta_weights.keys():
-					if self.alpha_update_algo == 'softmax':
+					if(self.alpha_update_algo == 'softmax') or (self.alpha_update_algo == 'linear') :
 						new_val = meta_weights[key] - (self.meta_lr_weights * meta_weights[key].grad)
-					elif self.alpha_update_algo == 'MoE':
-						weight_ = torch.exp(-self.meta_lr_weights * meta_weights[key].grad)
-						new_val = meta_weights[key] * weight_
-						norm_val += new_val.item()
 					else:
 						assert '{} - Algo not implemented for updating alphas'.format(self.alpha_update_algo)
+					norm_val += new_val.item()
 					meta_weights[key].copy_(new_val)
 					meta_weights[key].grad.zero_()
-				if self.alpha_update_algo == 'MoE':
+				if self.alpha_update_algo == 'linear':
+					for k in meta_weights.keys():
+						# Now do the projection
+						normed_val = meta_weights[key] + (len(meta_weights) - norm_val) / len(meta_weights)
+						meta_weights[key].copy_(normed_val)
+				elif self.alpha_update_algo == 'MoE':
 					for key in meta_weights.keys():
 						meta_weights[key].div_(norm_val)
 			total_loss = self.run_batch(model, batch, stats, meta_weights)
@@ -352,6 +354,9 @@ class Trainer(object):
 			inits[idx_] -= 2.0
 			inits = inits - min(inits) + (1.0 / len(kwargs['classes']))  # Make sure all are positive
 			inits = inits / sum(inits)
+			if self.alpha_update_algo == 'linear':
+				num_classes = len(kwargs['classes'])
+				inits = inits + (num_classes - sum(inits)) / num_classes
 			meta_weights = {class_: torch.tensor([inits[id_]]).float().cuda() for id_, class_ in enumerate(kwargs['classes'])}
 			for _, v in meta_weights.items():
 				v.requires_grad = True
