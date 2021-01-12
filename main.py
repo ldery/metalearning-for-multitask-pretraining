@@ -25,6 +25,7 @@ def get_options():
 	parser.add_argument('-num-aux-tasks', type=int, default=4)
 	parser.add_argument('-use-random', action='store_true')
 	parser.add_argument('-use-noise', action='store_true')
+	parser.add_argument('-use-neg-loss', action='store_true')
 	add_model_opts(parser)
 	add_trainer_args(parser)
 	add_weighter_args(parser)
@@ -104,7 +105,7 @@ def main():
 	algo = Trainer(
 				opts.train_epochs, opts.patience, meta_lr_weights=opts.meta_lr_weights,
 				meta_lr_sgd=opts.meta_lr_sgd, meta_split=opts.meta_split,
-				alpha_update_algo=opts.alpha_update_algo
+				alpha_update_algo=opts.alpha_update_algo, use_cosine=(not opts.no_use_cosine)
 			)
 	chosen_set = list(cifar100_super_classes.keys())
 	if chosen_set.index('people') < opts.num_aux_tasks:
@@ -116,6 +117,8 @@ def main():
 			chosen_set.append('rand_people')
 		if opts.use_noise:
 			chosen_set.append('noise_people')
+		if opts.use_neg_loss:
+			chosen_set.append('negloss_people')
 	for seed in range(opts.num_runs):
 		print('Currently on {}/{}'.format(seed + 1, opts.num_runs))
 		set_random_seed(seed)

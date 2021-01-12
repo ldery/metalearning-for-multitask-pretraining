@@ -85,6 +85,8 @@ class Weighter(object):
 		ax2 = ax.twinx()
 		ax2.plot(range(len(prim_vals)), to_viz[:, -1], color='tab:red', label='Test Accuracy')
 		ax2.plot(range(len(prim_vals)), to_viz[:, -2], color='tab:cyan', label='Val Accuracy')
+		min_, max_ = np.min(to_viz[:, -2:]) - 1.0, np.max(to_viz[:, -2:]) + 1.0
+		ax2.set_ylim(min_, max_)
 		ax2.set_ylabel('Test/Val Accuracy', color='tab:red')
 		ax2.legend(loc='upper left')
 		plt.savefig('{}/weighting_vrs_stat.png'.format(save_loc))

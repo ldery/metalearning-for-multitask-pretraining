@@ -84,7 +84,7 @@ class CIFAR100:
 		iter_idx_dict = defaultdict(list)
 		max_iters = -1
 		for class_ in classes:
-			if ('rand' in class_) or ('noise' in class_):
+			if ('rand' in class_) or ('noise' in class_) or ('negloss' in class_):
 				continue
 			class_name = class_
 			data_ = chosen_dict[class_name]
@@ -106,7 +106,7 @@ class CIFAR100:
 			batch_dict = {}
 			num_iters += 1
 			for class_ in classes:
-				if ('rand' in class_) or ('noise' in class_):
+				if ('rand' in class_) or ('noise' in class_) or ('negloss' in class_):
 					continue
 				class_name = class_
 				data_ = chosen_dict[class_name]
@@ -125,6 +125,9 @@ class CIFAR100:
 				if noise_ in classes:
 					noisy_xs = torch.randn_like(xs)
 					batch_dict[noise_] = (noisy_xs, ys.clone().detach())
+				negloss = "negloss_{}".format(class_)
+				if negloss in classes:
+					batch_dict[neg_loss] = (xs.clone().detach(), ys.clone().detach())
 				batch_dict[class_] = (xs, ys)
 			yield batch_dict
 			if num_iters == max_iters:

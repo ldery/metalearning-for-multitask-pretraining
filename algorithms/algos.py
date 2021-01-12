@@ -51,6 +51,7 @@ def add_trainer_args(parser):
 	parser.add_argument('-meta-split', type=str, default='val', choices=['train', 'val'])
 	parser.add_argument('-freeze-bn', action='store_true', help='Freeze the BN layers after pre-training')
 	parser.add_argument('-alpha-update-algo', type=str, default='MoE', choices=['softmax', 'MoE', 'linear'])
+	parser.add_argument('-no-use-cosine', action='store_true', help='Do not use cosine instead of dot product')
 
 
 def get_softmax(weights):
@@ -69,7 +70,8 @@ class Trainer(object):
 	def __init__(
 					self, train_epochs, patience,
 					meta_lr_weights=0.01, meta_lr_sgd=0.1,
-					meta_split='train', alpha_update_algo='MoE'
+					meta_split='train', alpha_update_algo='MoE',
+					use_cosine=True
 				):
 		self.chkpt_every = 10  # save to checkpoint
 		self.train_epochs = train_epochs
@@ -79,6 +81,7 @@ class Trainer(object):
 		self.meta_lr_sgd = meta_lr_sgd
 		self.meta_split = meta_split
 		self.alpha_update_algo = alpha_update_algo
+		self.use_cosine = use_cosine
 		print('Using {} as the update algorithm'.format(self.alpha_update_algo))
 
 	def get_optim(self, model, opts, ft=False):
@@ -162,20 +165,25 @@ class Trainer(object):
 		for key, pos_pair in key_boundaries.items():
 			this_out = shared_out[pos_pair[0]:pos_pair[1], :]
 			head_name = key
-			if ('rand' in key) or ('noise' in key):
+			loss_mul_fact = 1.0
+			if ('rand' in key) or ('noise' in key) or ('negloss' in key):
 				head_name = head_name.split('_')[-1]
+				loss_mul_fact = -loss_mul_fact if 'negloss' in key else loss_mul_fact
 			m_out = model(this_out, head_name=head_name, head_only=True)
-			loss_ = loss_fn(m_out, pos_pair[-1])
+			loss_ = loss_mul_fact * loss_fn(m_out, pos_pair[-1])
+
+			if stats is not None:
+				stats[key][0] += loss_.item() * len(pos_pair[-1])
+				stats[key][1] += self._get_numcorrect(m_out, pos_pair[-1])
+				stats[key][2] += len(pos_pair[-1])
+
+			loss_ = loss_ / (np.abs(loss_.item()))
 			if alpha_generator is not None:
 				alpha_sum += alpha_generator[key]
 				total_loss = total_loss + alpha_generator[key] * loss_
 			else:
 				alpha_sum += 1.0
 				total_loss += loss_
-			if stats is not None:
-				stats[key][0] += loss_.item() * len(pos_pair[-1])
-				stats[key][1] += self._get_numcorrect(m_out, pos_pair[-1])
-				stats[key][2] += len(pos_pair[-1])
 		if isinstance(alpha_sum, torch.Tensor):
 			alpha_sum = alpha_sum.item()
 		return total_loss / alpha_sum
@@ -233,12 +241,16 @@ class Trainer(object):
 				if meta_weights[key].grad is None:
 					meta_weights[key].grad = torch.zeros_like(meta_weights[key])
 				meta_weights[key].grad.zero_()
-				group = key
-				if ('rand' in group) or ('noise' in group):
+				group, loss_mul_fact = key, 1.0
+				if ('rand' in group) or ('noise' in group) or ('negloss' in group):
 					group = group.split('_')[-1]
+					loss_mul_fact = -loss_mul_fact if 'negloss' in key else loss_mul_fact
 				result = self.run_model(xs, ys, model, group=group, reduct_='mean')
-				grads = torch.autograd.grad(result[0], model.parameters(), allow_unused=True)
+				grads = torch.autograd.grad(loss_mul_fact * result[0], model.parameters(), allow_unused=True)
 				dot_prod = 0.0
+				# Keep track of norms for gradient calculation
+				dev_norm_calculated = False
+				dev_norm, task_norm = 0.0, 0.0
 				with torch.no_grad():
 					for idx_, (pname, param) in enumerate(new_model.named_parameters()):
 						if grads[idx_] is None:
@@ -247,13 +259,21 @@ class Trainer(object):
 						if param.grad is None:
 							continue
 						dot_prod += (param.grad * grads[idx_]).sum()
+						task_norm += (param.grad**2).sum()
+						if not dev_norm_calculated:
+							dev_norm += (grads[idx_]**2).sum()
+					dev_norm_calculated = True 
 					dot_prod = dot_prod.item()
+					if self.use_cosine:
+						dot_prod = dot_prod / (np.sqrt(dev_norm.item()) * np.sqrt(task_norm.item()))
+					else:
+						dot_prod = dot_prod * self.meta_lr_sgd
 				# Perform Gradient clipping here
 				if self.alpha_update_algo == 'softmax':
-					var_ = -sm_meta_weights[key] * dot_prod * self.meta_lr_sgd
+					var_ = -sm_meta_weights[key] * dot_prod
 					var_.backward(retain_graph=(b_idx != (len(batch) - 1)))
 				else:
-					var_ = -meta_weights[key] * dot_prod * self.meta_lr_sgd
+					var_ = -meta_weights[key] * dot_prod
 					var_.backward()
 				self.dp_stats[key].append(dot_prod)
 			# update the meta_var
@@ -264,14 +284,16 @@ class Trainer(object):
 						new_val = meta_weights[key] - (self.meta_lr_weights * meta_weights[key].grad)
 					else:
 						assert '{} - Algo not implemented for updating alphas'.format(self.alpha_update_algo)
+					if self.alpha_update_algo == 'linear':
+						new_val = torch.clamp(new_val, 0.0, len(meta_weights))
 					norm_val += new_val.item()
 					meta_weights[key].copy_(new_val)
 					meta_weights[key].grad.zero_()
 				if self.alpha_update_algo == 'linear':
-					for k in meta_weights.keys():
+					for key in meta_weights.keys():
 						# Now do the projection
 						normed_val = meta_weights[key] + (len(meta_weights) - norm_val) / len(meta_weights)
-						meta_weights[key].copy_(normed_val)
+						meta_weights[key].copy_(normed_val * (normed_val > 0.0))
 				elif self.alpha_update_algo == 'MoE':
 					for key in meta_weights.keys():
 						meta_weights[key].div_(norm_val)
@@ -285,7 +307,7 @@ class Trainer(object):
 		summary = {}
 		for k, v in stats.items():
 			summary[k] = (v[0] / v[2], v[1].item() / v[2])
-# 		print({k: np.mean(v[-start_:]) for k, v in self.dp_stats.items()})
+		print({k: np.mean(v[-start_:]) for k, v in self.dp_stats.items()})
 		return summary
 
 	def model_exists(self, model, dataset, kwargs):
@@ -401,8 +423,8 @@ class Trainer(object):
 					to_avg.append(v[1])
 
 			monitor_metric.append(np.mean(to_avg))
-			if lr_scheduler is not None:
-				lr_scheduler.step(monitor_metric[-1])
+# 			if lr_scheduler is not None:
+# 				lr_scheduler.step(monitor_metric[-1])
 
 			test_iter = dataset._get_iterator(to_eval, kwargs['batch_sz'], split='test', shuffle=False)
 			test_results = self.run_epoch(model, test_iter, None)

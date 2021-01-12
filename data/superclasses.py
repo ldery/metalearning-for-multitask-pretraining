@@ -11,10 +11,10 @@
 
 
 cifar100_super_classes = {
-	'aquatic_mammals': [4, 30, 55, 72, 95],
-	'fish': [1, 32, 67, 73, 91],
 	'flowers': [54, 62, 70, 82, 92],
 	'food_containers': [9, 10, 16, 28, 61],
+	'aquatic_mammals': [4, 30, 55, 72, 95],
+	'fish': [1, 32, 67, 73, 91],
 	'fruit_and_vegetables': [0, 51, 53, 57, 83],
 	'household_electrical_devices': [22, 39, 40, 86, 87],
 	'household_furniture': [5, 20, 25, 84, 94],
