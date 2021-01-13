@@ -280,7 +280,8 @@ class Trainer(object):
 			# update the meta_var
 			with torch.no_grad():
 				self.update_meta_weights(meta_weights, update_algo=self.alpha_update_algo)
-				self.update_meta_weights(self.class_norms, update_algo='class_linear')
+				if self.decoupled_weights:
+					self.update_meta_weights(self.class_norms, update_algo='class_linear')
 			total_loss = self.run_batch(model, batch, stats, meta_weights)
 			if optim is not None:
 				total_loss.backward()  # backprop the accumulated gradient
