@@ -52,6 +52,7 @@ def add_trainer_args(parser):
 	parser.add_argument('-freeze-bn', action='store_true', help='Freeze the BN layers after pre-training')
 	parser.add_argument('-alpha-update-algo', type=str, default='MoE', choices=['softmax', 'MoE', 'linear'])
 	parser.add_argument('-no-use-cosine', action='store_true', help='Do not use cosine instead of dot product')
+	parser.add_argument('-decoupled-weights', action='store_true', help='Decouple the norm from the proportion of the auxiliary task')
 
 
 def get_softmax(weights):
@@ -71,7 +72,7 @@ class Trainer(object):
 					self, train_epochs, patience,
 					meta_lr_weights=0.01, meta_lr_sgd=0.1,
 					meta_split='train', alpha_update_algo='MoE',
-					use_cosine=True
+					use_cosine=True, decoupled_weights=False
 				):
 		self.chkpt_every = 10  # save to checkpoint
 		self.train_epochs = train_epochs
@@ -82,6 +83,7 @@ class Trainer(object):
 		self.meta_split = meta_split
 		self.alpha_update_algo = alpha_update_algo
 		self.use_cosine = use_cosine
+		self.decoupled_weights = decoupled_weights
 		print('Using {} as the update algorithm'.format(self.alpha_update_algo))
 
 	def get_optim(self, model, opts, ft=False):
@@ -89,7 +91,7 @@ class Trainer(object):
 		if opts.optimizer == 'Adam':
 			optim = Adam(model.parameters(), lr=lr)
 		elif opts.optimizer == 'SGD':
-			optim = SGD(model.parameters(), lr=lr)
+			optim = SGD(model.parameters(), lr=lr, momentum=0.0)
 		elif opts.optimizer == 'AdamW':
 			print('Using AdamW Optimizer')
 			optim = AdamW(model.parameters(), lr=lr, weight_decay=0.1)
@@ -177,10 +179,9 @@ class Trainer(object):
 				stats[key][1] += self._get_numcorrect(m_out, pos_pair[-1])
 				stats[key][2] += len(pos_pair[-1])
 
-			loss_ = loss_ / (np.abs(loss_.item()))
 			if alpha_generator is not None:
 				alpha_sum += alpha_generator[key]
-				total_loss = total_loss + alpha_generator[key] * loss_
+				total_loss = total_loss + alpha_generator[key] * loss_ * self.class_norms[key]
 			else:
 				alpha_sum += 1.0
 				total_loss += loss_
@@ -207,11 +208,8 @@ class Trainer(object):
 			# We need to learn the updated meta-weights here
 			# Copy the model into a new model
 			new_model = deepcopy(model)
-			if self.alpha_update_algo == 'softmax':
-				sm_meta_weights = get_softmax(meta_weights)
-				loss_ = self.run_batch(new_model, batch, None, sm_meta_weights)
-			else:
-				loss_ = self.run_batch(new_model, batch, None, meta_weights)
+			this_weights = get_softmax(meta_weights) if self.alpha_update_algo == 'softmax' else meta_weights
+			loss_ = self.run_batch(new_model, batch, None, this_weights)
 			loss_.backward()
 
 			# We can now take an SGD step here
@@ -240,7 +238,10 @@ class Trainer(object):
 			for b_idx, (key, (xs, ys)) in enumerate(batch.items()):
 				if meta_weights[key].grad is None:
 					meta_weights[key].grad = torch.zeros_like(meta_weights[key])
+				if self.class_norms[key].grad is None:
+					self.class_norms[key].grad = torch.zeros_like(self.class_norms[key])
 				meta_weights[key].grad.zero_()
+				self.class_norms[key].grad.zero_()
 				group, loss_mul_fact = key, 1.0
 				if ('rand' in group) or ('noise' in group) or ('negloss' in group):
 					group = group.split('_')[-1]
@@ -270,33 +271,16 @@ class Trainer(object):
 						dot_prod = dot_prod * self.meta_lr_sgd
 				# Perform Gradient clipping here
 				if self.alpha_update_algo == 'softmax':
-					var_ = -sm_meta_weights[key] * dot_prod
+					var_ = -sm_meta_weights[key] * dot_prod * self.class_norms[key]
 					var_.backward(retain_graph=(b_idx != (len(batch) - 1)))
 				else:
-					var_ = -meta_weights[key] * dot_prod
+					var_ = -meta_weights[key] * dot_prod * self.class_norms[key]
 					var_.backward()
 				self.dp_stats[key].append(dot_prod)
 			# update the meta_var
 			with torch.no_grad():
-				norm_val = 0.0
-				for key in meta_weights.keys():
-					if(self.alpha_update_algo == 'softmax') or (self.alpha_update_algo == 'linear') :
-						new_val = meta_weights[key] - (self.meta_lr_weights * meta_weights[key].grad)
-					else:
-						assert '{} - Algo not implemented for updating alphas'.format(self.alpha_update_algo)
-					if self.alpha_update_algo == 'linear':
-						new_val = torch.clamp(new_val, 0.0, len(meta_weights))
-					norm_val += new_val.item()
-					meta_weights[key].copy_(new_val)
-					meta_weights[key].grad.zero_()
-				if self.alpha_update_algo == 'linear':
-					for key in meta_weights.keys():
-						# Now do the projection
-						normed_val = meta_weights[key] + (len(meta_weights) - norm_val) / len(meta_weights)
-						meta_weights[key].copy_(normed_val * (normed_val > 0.0))
-				elif self.alpha_update_algo == 'MoE':
-					for key in meta_weights.keys():
-						meta_weights[key].div_(norm_val)
+				self.update_meta_weights(meta_weights, update_algo=self.alpha_update_algo)
+				self.update_meta_weights(self.class_norms, update_algo='class_linear')
 			total_loss = self.run_batch(model, batch, stats, meta_weights)
 			if optim is not None:
 				total_loss.backward()  # backprop the accumulated gradient
@@ -309,6 +293,30 @@ class Trainer(object):
 			summary[k] = (v[0] / v[2], v[1].item() / v[2])
 		print({k: np.mean(v[-start_:]) for k, v in self.dp_stats.items()})
 		return summary
+	
+	# Perform update on meta-related weights.
+	def update_meta_weights(self, meta_weights, update_algo='softmax'):
+		norm_val = 0.0
+		for key in meta_weights.keys():
+			if(update_algo == 'softmax') or ('linear' in update_algo) :
+				new_val = meta_weights[key] - (self.meta_lr_weights * meta_weights[key].grad)
+			else:
+				assert '{} - Algo not implemented for updating alphas'.format(self.alpha_update_algo)
+			if update_algo == 'linear':
+				new_val = torch.clamp(new_val, 0.0, len(meta_weights))
+			elif update_algo == 'class_linear':
+				new_val = new_val * (new_val > 0.0)
+			norm_val += new_val.item()
+			meta_weights[key].copy_(new_val)
+			meta_weights[key].grad.zero_()
+		if update_algo == 'linear': # won't be called when update algo is class_linear
+			for key in meta_weights.keys():
+				# Now do the projection
+				normed_val = meta_weights[key] + (len(meta_weights) - norm_val) / len(meta_weights)
+				meta_weights[key].copy_(normed_val * (normed_val > 0.0))
+		elif update_algo == 'MoE':
+			for key in meta_weights.keys():
+				meta_weights[key].div_(norm_val)
 
 	def model_exists(self, model, dataset, kwargs):
 		chkpt_path = kwargs["model_chkpt_fldr"]
@@ -363,6 +371,11 @@ class Trainer(object):
 		last_path = os.path.join(chkpt_path, 'last.chkpt')
 		monitor_list = kwargs['monitor_list']
 		monitor_metric, best_epoch = [], -1
+		# setup the class norms : 
+		self.class_norms = {class_: torch.tensor([1.0]).float().cuda() for id_, class_ in enumerate(kwargs['classes'])}
+		if self.decoupled_weights:
+			for _, v in self.class_norms.items():
+				v.requires_grad = True
 		# setup the meta-weights
 		if kwargs['learn_meta_weights']:
 			assert len(monitor_list) == 1, 'We can only learn meta-weights when there is 1 primary class'
@@ -396,7 +409,8 @@ class Trainer(object):
 			if self.alpha_update_algo == 'softmax':
 				this_weights = get_softmax(meta_weights)
 			m_weights = {k: v.item() for k, v in this_weights.items()}
-			alpha_gen.record_epoch_end(-1, 0, 0, meta_weights=m_weights)
+			c_weights = {k: v.item() for k, v in self.class_norms.items()}
+			alpha_gen.record_epoch_end(-1, 0, 0, meta_weights=m_weights, class_norms=c_weights)
 		
 		for i in range(self.train_epochs):
 			tr_iter = dataset._get_iterator(kwargs['classes'], kwargs['batch_sz'], split='train', shuffle=True)
@@ -423,8 +437,6 @@ class Trainer(object):
 					to_avg.append(v[1])
 
 			monitor_metric.append(np.mean(to_avg))
-# 			if lr_scheduler is not None:
-# 				lr_scheduler.step(monitor_metric[-1])
 
 			test_iter = dataset._get_iterator(to_eval, kwargs['batch_sz'], split='test', shuffle=False)
 			test_results = self.run_epoch(model, test_iter, None)
@@ -446,15 +458,20 @@ class Trainer(object):
 			self.print_metrics(i, self.metrics)
 			if kwargs['learn_meta_weights']:
 				pprint(m_weights)
+			print('These are the class norms')
+			pprint(self.class_norms)
 			print('--' * 30)
 
 			if alpha_gen is not None:
-				alpha_gen.record_epoch_end(i, monitor_metric[-1], np.mean(to_avg), meta_weights=m_weights)
+				c_weights = {k: v.item() for k, v in self.class_norms.items()}
+				alpha_gen.record_epoch_end(i, monitor_metric[-1], np.mean(to_avg), meta_weights=m_weights, class_norms=c_weights)
 			no_improvement = max(monitor_metric) not in monitor_metric[-self.patience:]
 			if i > self.patience and no_improvement:
 				break
-		# Save the dot products for later analysis
-		pickle.dump(self.dp_stats, open(os.path.join(chkpt_path, 'dp_stats.pkl'), 'wb'))
+		# Save the dot products and metrics for later analysis
+		if kwargs['learn_meta_weights']:
+			pickle.dump(self.dp_stats, open(os.path.join(chkpt_path, 'dp_stats.pkl'), 'wb'))
+			pickle.dump({k:v for k, v in self.metrics.items()}, open(os.path.join(chkpt_path, 'metrics.pkl'), 'wb'))
 		# Load the best path
 		if kwargs['use_last_chkpt']:
 			model.load_state_dict(torch.load(last_path))

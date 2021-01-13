@@ -48,6 +48,7 @@ class Weighter(object):
 		self.prim_key = prim_key
 		self.init_val = init_val
 		self.result_logs = []
+		self.class_norm_logs = []
 
 	def __getitem__(self, key):
 		return self.weights[key]
@@ -61,34 +62,43 @@ class Weighter(object):
 			entry = [v for _, v in self.weights.items()]
 		else:
 			entry = [v for _, v in kwargs['meta_weights'].items()]
+		class_norm_entry = [v for _, v in kwargs['class_norms'].items()]
+		self.class_norm_logs.append(class_norm_entry)
 		# Place the statistic to record in the final position
 		entry.extend([val_stat, test_stat])
 		self.result_logs.append(entry)
 
 	def viz_results(self, save_loc, group_aux=True):
+		to_viz_classnorms = np.array(self.class_norm_logs)
 		to_viz = np.array(self.result_logs)
 		all_keys = list(self.weights.keys())
 		prim_idx = all_keys.index(self.prim_key)
 		prim_vals = to_viz[:, prim_idx]
-		fig, ax = plt.subplots(figsize=(16, 8))
-		ax.plot(range(len(prim_vals)), prim_vals, label='Primary Task Weighting')
+		fig, ax = plt.subplots(1, 2, figsize=(16, 8))
+		ax[0].plot(range(len(prim_vals)), prim_vals, label='Primary Task Weighting')
 		for idx_, key in enumerate(all_keys):
 			if idx_ == prim_idx:
+				desc = '{} Norm'.format(key) if not group_aux else 'Norm Per-Auxiliary Task'
+				ax[1].plot(range(len(prim_vals)), to_viz_classnorms[:, idx_], linestyle='-.', label=desc)
 				continue
 			desc = '{}'.format(key) if not group_aux else 'Weight Per-Auxiliary Task'
-			ax.plot(range(len(prim_vals)), to_viz[:, idx_], linestyle='dashed', label=desc)
+			ax[0].plot(range(len(prim_vals)), to_viz[:, idx_], linestyle='dashed', label=desc)
+			desc = '{} Norm'.format(key) if not group_aux else 'Norm Per-Auxiliary Task'
+			ax[1].plot(range(len(prim_vals)), to_viz_classnorms[:, idx_], linestyle='-.', label=desc)
 			if group_aux:
 				break
-		ax.set_xlabel('Epoch')
-		ax.set_ylabel('Weighting')
-		ax.legend(loc='lower left')
-		ax2 = ax.twinx()
+		for i in range(2):
+			ax[i].set_xlabel('Epoch')
+			ax[i].set_ylabel('Weighting')
+			ax[i].legend(loc='lower left')
+		ax2 = ax[0].twinx()
 		ax2.plot(range(len(prim_vals)), to_viz[:, -1], color='tab:red', label='Test Accuracy')
 		ax2.plot(range(len(prim_vals)), to_viz[:, -2], color='tab:cyan', label='Val Accuracy')
-		min_, max_ = np.min(to_viz[:, -2:]) - 1.0, np.max(to_viz[:, -2:]) + 1.0
+		min_, max_ = np.min(to_viz[:, -2:]) - 0.01, np.max(to_viz[:, -2:]) + 0.01
 		ax2.set_ylim(min_, max_)
 		ax2.set_ylabel('Test/Val Accuracy', color='tab:red')
 		ax2.legend(loc='upper left')
+		plt.tight_layout()
 		plt.savefig('{}/weighting_vrs_stat.png'.format(save_loc))
 
 

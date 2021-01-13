@@ -105,7 +105,8 @@ def main():
 	algo = Trainer(
 				opts.train_epochs, opts.patience, meta_lr_weights=opts.meta_lr_weights,
 				meta_lr_sgd=opts.meta_lr_sgd, meta_split=opts.meta_split,
-				alpha_update_algo=opts.alpha_update_algo, use_cosine=(not opts.no_use_cosine)
+				alpha_update_algo=opts.alpha_update_algo, use_cosine=(not opts.no_use_cosine),
+				decoupled_weights=opts.decoupled_weights
 			)
 	chosen_set = list(cifar100_super_classes.keys())
 	if chosen_set.index('people') < opts.num_aux_tasks:
