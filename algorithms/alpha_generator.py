@@ -121,7 +121,7 @@ class AlternatingWeighter(Weighter):
 
 	def prep_epoch_start(self, epoch, **kwargs):
 		# restore the initial weighting
-		if (epoch < self.prim_start) or ((epoch - self.prim_start) % self.alt_freq) == 0:
+		if (epoch < self.prim_start) or (((epoch - self.prim_start) // self.alt_freq) % 2) == 0:
 			prim_val = 0.0
 			aux_val = self.init_val
 		else:

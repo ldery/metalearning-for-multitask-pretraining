@@ -26,10 +26,11 @@ from copy import deepcopy
 
 # NOTE [ldery] - put a freeze on adding anymore hyper-params until the ones you have are understood !
 def add_trainer_args(parser):
-	parser.add_argument('-train-epochs', type=int, default=50)
+	parser.add_argument('-train-epochs', type=int, default=100)
 	parser.add_argument('-patience', type=int, default=50)
 	parser.add_argument('-lr-patience', type=int, default=4)
 	parser.add_argument('-optimizer', type=str, default='Adam')
+	parser.add_argument('-ft-optimizer', type=str, default='Adam')
 	parser.add_argument('-lr', type=float, default=1e-3)
 	parser.add_argument('-ft-lr', type=float, default=5e-5)
 	parser.add_argument(
@@ -87,12 +88,18 @@ class Trainer(object):
 		print('Using {} as the update algorithm'.format(self.alpha_update_algo))
 
 	def get_optim(self, model, opts, ft=False):
-		lr = opts.lr if not ft else opts.ft_lr
-		if opts.optimizer == 'Adam':
+		if not ft:
+			lr = opts.lr
+			optimizer = opts.optimizer
+		else:
+			lr = opts.ft_lr
+			optimizer = opts.ft_optimizer
+		print('Using Optimizer : ', optimizer)
+		if optimizer == 'Adam':
 			optim = Adam(model.parameters(), lr=lr)
-		elif opts.optimizer == 'SGD':
+		elif optimizer == 'SGD':
 			optim = SGD(model.parameters(), lr=lr, momentum=0.0)
-		elif opts.optimizer == 'AdamW':
+		elif optimizer == 'AdamW':
 			print('Using AdamW Optimizer')
 			optim = AdamW(model.parameters(), lr=lr, weight_decay=0.1)
 		else:
@@ -380,14 +387,14 @@ class Trainer(object):
 		# setup the meta-weights
 		if kwargs['learn_meta_weights']:
 			assert len(monitor_list) == 1, 'We can only learn meta-weights when there is 1 primary class'
-# 			inits = np.random.normal(scale=2.0, size=len(kwargs['classes']))
-			inits, idx_ = [], 0
-			for idx, k in enumerate(kwargs['classes']):
-				val_ = np.random.normal(size=1)[0]
-				if k == 'people':
-					idx_ = idx
-				inits.append(val_)
-			inits[idx_] -= 2.0
+			inits = np.random.normal(scale=2.0, size=len(kwargs['classes']))
+# 			inits, idx_ = [], 0
+# 			for idx, k in enumerate(kwargs['classes']):
+# 				val_ = np.random.normal(size=1)[0]
+# 				if k == 'people':
+# 					idx_ = idx
+# 				inits.append(val_)
+# 			inits[idx_] -= 2.0
 			inits = inits - min(inits) + (1.0 / len(kwargs['classes']))  # Make sure all are positive
 			inits = inits / sum(inits)
 			if self.alpha_update_algo == 'linear':
