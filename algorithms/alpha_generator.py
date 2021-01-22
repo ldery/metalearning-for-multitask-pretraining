@@ -58,11 +58,14 @@ class Weighter(object):
 		pass
 
 	def record_epoch_end(self, epoch, val_stat,  test_stat, **kwargs):
-		if kwargs['meta_weights'] is None:
+		if ('meta_weights' not in kwargs) or (kwargs['meta_weights'] is None):
 			entry = [v for _, v in self.weights.items()]
 		else:
 			entry = [v for _, v in kwargs['meta_weights'].items()]
-		class_norm_entry = [v for _, v in kwargs['class_norms'].items()]
+		if 'class_norms' in kwargs:
+			class_norm_entry = [v for _, v in kwargs['class_norms'].items()]
+		else:
+			class_norm_entry = [1.0]*len(self.weights)
 		self.class_norm_logs.append(class_norm_entry)
 		# Place the statistic to record in the final position
 		entry.extend([val_stat, test_stat])

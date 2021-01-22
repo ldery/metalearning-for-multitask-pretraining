@@ -9,6 +9,9 @@ split='val'
 init='rand'
 nruns=3
 
+
+sub='longer'
+
 sgd_arr=($lr)
 weight_arr=(5e-2 1e-1)
 
@@ -19,6 +22,13 @@ do
 		lr=$c
 		expname=$upAlg'.meta.'$split'.w_lr='$k'_sgd_lr='$c'_lr='$lr'_ntasks='$auxTasks'.'$init'.'$optim
 		echo 'Performing on '$expname
-		python -u main.py -num-aux-tasks $auxTasks -alpha-update-algo $upAlg -mode meta -num-runs $nruns -exp-name $exp_fldr'/meta/'$expname -meta-lr-weights $k  -meta-lr-sgd $c -meta-split $split -lr $lr -optimizer $optim &> run_logs/$expname'.txt'
+		if [[ "$exp_fldr" == *"$sub"* ]]; then
+			python -u main.py -num-aux-tasks $auxTasks -alpha-update-algo $upAlg -mode meta -num-runs $nruns -exp-name $exp_fldr'/meta/'$expname -meta-lr-weights $k  -meta-lr-sgd $c -meta-split $split -lr $lr -optimizer $optim -train-epochs 400 -patience 400 &> run_logs/$expname'.txt'
+			tail -n 5 run_logs/$expname'.txt'
+		else
+			python -u main.py -num-aux-tasks $auxTasks -alpha-update-algo $upAlg -mode meta -num-runs $nruns -exp-name $exp_fldr'/meta/'$expname -meta-lr-weights $k  -meta-lr-sgd $c -meta-split $split -lr $lr -optimizer $optim &> run_logs/$expname'.txt'
+			tail -n 5 run_logs/$expname'.txt'
+		fi
+		
 	done
 done
