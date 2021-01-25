@@ -219,6 +219,8 @@ class Trainer(object):
 		for group_idx, batch in enumerate(group_iter):
 			# We do not have enough samples to continue, so wrap around
 			optim.zero_grad()
+			
+			# Take a step with the joint loss
 			override_dict = {'lr': [torch.tensor([self.meta_lr_sgd]).cuda()]}
 			with higher.innerloop_ctx(model, optim, override=override_dict) as (fmodel, diffopt):
 				# Learn the updated model
@@ -234,43 +236,50 @@ class Trainer(object):
 				for primary_key, (xs, ys) in prim_batch.items():
 					assert 'rand' not in primary_key, 'The primary key is wrong : {}'.format(primary_key)
 					results = self.run_model(xs, ys, fmodel, group=primary_key, reduct_='mean')
-				# Compute Normalization factor
-				meta_grad = torch.autograd.grad(results[0], fmodel.parameters(), retain_graph=True, allow_unused=True)
-				meta_norm = self.calc_norm(meta_grad)
+				
+				mt_future_loss = results[0]
 
-				# Do the backward pass
-				results[0].backward()
+			# Take a step on only the primary loss
+			with higher.innerloop_ctx(model, optim, override=override_dict) as (fmodel, diffopt):
+				# Learn the updated model
+				for inner_idx in range(self.inner_iters):
+					if group_idx + inner_idx > len(group_iter) - 1:
+						break
+					xs, ys = group_iter[group_idx + inner_idx][primary_key]
+					loss_ = self.run_model(xs, ys, fmodel, group=primary_key, reduct_='mean')[0]
+					diffopt.step(loss_)
 
-			del fmodel
-			del diffopt
-
-			# Compute appropriate normalization factors
-			for b_idx, (key, (xs, ys)) in enumerate(batch.items()):
-				result = self.run_model(xs, ys, model, group=key, reduct_='mean')
-				grads = torch.autograd.grad(result[0], model.parameters(), allow_unused=True)
-				key_norm = self.calc_norm(grads)
-
-				with torch.no_grad():
-					normalization = key_norm * meta_norm * self.meta_lr_sgd
-					if self.decoupled_weights and class_norms[key].grad is not None:
-						class_norms[key].grad.div_(normalization)
+				prim_batch = primary_batches[prim_idxs[group_idx]]
+				# Compute the loss on the meta-val set
+				for primary_key, (xs, ys) in prim_batch.items():
+					assert 'rand' not in primary_key, 'The primary key is wrong : {}'.format(primary_key)
+					results = self.run_model(xs, ys, fmodel, group=primary_key, reduct_='mean')
+				
+				st_future_loss = results[0]
+			
+			if mt_future_loss > st_future_loss:
+				print('We are going to compute the gradients and update alphas')
+				loss = mt_future_loss - st_future_loss
+				loss.backward()
+				# Compute appropriate normalization factors
+				for b_idx, (key, (xs, ys)) in enumerate(batch.items()):
 					if meta_weights[key].grad is not None:
-						meta_weights[key].grad.div_(normalization)
 						self.dp_stats[key].append(-meta_weights[key].grad.item())
 					else:
 						self.dp_stats[key].append(0.0)
+					print(key, meta_weights[key].item(),  meta_weights[key].grad.item())
 
-# 			with torch.no_grad():
-# 				for k, v in meta_weights.items():
-# 					if v.grad is not None:
-# 						self.dp_stats[k].append(-v.grad.item())
+				# Update the task level weightings
+				with torch.no_grad():
+					self.update_meta_weights(meta_weights, update_algo=self.alpha_update_algo)
+					if self.decoupled_weights:
+						self.update_meta_weights(class_norms, update_algo='class_linear')
+					this_weights = get_softmax(meta_weights) if self.alpha_update_algo == 'softmax' else meta_weights
+			else:
+				print('We are going to use the same old params')
 
-			# Update the task level weightings
-			with torch.no_grad():
-				self.update_meta_weights(meta_weights, update_algo=self.alpha_update_algo)
-				if self.decoupled_weights:
-					self.update_meta_weights(class_norms, update_algo='class_linear')
-				this_weights = get_softmax(meta_weights) if self.alpha_update_algo == 'softmax' else meta_weights
+			del diffopt
+			del fmodel
 
 			# Now take a true gradient step with the corrected weights
 			total_loss = self.run_batch(model, batch, stats, this_weights, class_norms)
