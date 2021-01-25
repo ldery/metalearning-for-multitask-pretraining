@@ -11,11 +11,13 @@
 
 
 from .superclasses import *
+from .augmentations import augmentations_and_fns, is_augmentation, apply_augs, normalize_augmentation
 import torch
 import torchvision
 import numpy as np
 import math
 from collections import defaultdict
+import pdb
 
 
 class CIFAR100:
@@ -24,18 +26,14 @@ class CIFAR100:
 				):
 		# Get the cifar100 dataset from torchvision
 		save_path = "~/" if 'save_path' not in kwargs else kwargs['save_path']
-		normalize = torchvision.transforms.Normalize(
-											mean=[0.4914, 0.4822, 0.4465],
-											std=[0.2023, 0.1994, 0.2010]
-										)
 		tform = torchvision.transforms.Compose([
 								torchvision.transforms.ToTensor(),
-								normalize
 							])
 		self.train = torchvision.datasets.CIFAR100(save_path, train=True, download=True, transform=tform)
 		self.test = torchvision.datasets.CIFAR100(save_path, train=False, download=True, transform=tform)
 		self.super_classlist = cifar100_super_classes
 		self._group_data(flatten=kwargs['flatten'])
+		self.aug_fns = augmentations_and_fns()
 
 	def _create_new_classes(self, orig_dict, reversed_name_dict, flatten):
 		this_dict_ = defaultdict(list)
@@ -84,7 +82,7 @@ class CIFAR100:
 		iter_idx_dict = defaultdict(list)
 		max_iters = -1
 		for class_ in classes:
-			if ('rand' in class_) or ('noise' in class_) or ('negloss' in class_):
+			if is_augmentation(class_):
 				continue
 			class_name = class_
 			data_ = chosen_dict[class_name]
@@ -106,7 +104,7 @@ class CIFAR100:
 			batch_dict = {}
 			num_iters += 1
 			for class_ in classes:
-				if ('rand' in class_) or ('noise' in class_) or ('negloss' in class_):
+				if is_augmentation(class_):
 					continue
 				class_name = class_
 				data_ = chosen_dict[class_name]
@@ -116,19 +114,9 @@ class CIFAR100:
 					xs.extend([data_[id_][i] for i in vals[:per_sub_class]])
 					ys.extend([id_ for _ in range(per_sub_class)])
 					idxs[id_] = vals[per_sub_class:]
-				xs, ys = torch.stack(xs).cuda(), torch.tensor(ys).cuda()
-				rand_ = "rand_{}".format(class_)
-				if rand_ in classes:
-					rand_perm = np.random.permutation(len(ys))
-					batch_dict[rand_] = (xs.clone().detach(), ys.clone().detach()[rand_perm])
-				noise_ = "noise_{}".format(class_)
-				if noise_ in classes:
-					noisy_xs = torch.randn_like(xs)
-					batch_dict[noise_] = (noisy_xs, ys.clone().detach())
-				negloss = "negloss_{}".format(class_)
-				if negloss in classes:
-					batch_dict[neg_loss] = (xs.clone().detach(), ys.clone().detach())
-				batch_dict[class_] = (xs, ys)
+				apply_augs(class_, (xs, ys), batch_dict, classes, self.aug_fns)
+				batch_dict[class_] = normalize_augmentation((xs, ys))
+
 			yield batch_dict
 			if num_iters == max_iters:
 				break

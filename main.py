@@ -15,7 +15,9 @@ from copy import deepcopy
 
 # Setup the arguments
 def get_options():
-	parser = ArgumentParser(description='Testbed for Datapoint Selection Code')
+	parser = ArgumentParser(description='Testbed for Datapoint Selection Code')\
+	# Main Class
+	parser.add_argument('-main-super-class', type=str, default='people')
 	parser.add_argument('-log-comment', type=str, default='experiment')
 	parser.add_argument('-seed', type=int, default=1)
 	parser.add_argument('-num-runs', type=int, default=3, help='number of reruns so we can estimate confidence interval')
@@ -23,9 +25,13 @@ def get_options():
 	parser.add_argument('-data-seed', type=int, default=1234, help='The seed to use for the dataset')
 	parser.add_argument('-mode', type=str, choices=['tgt_only', 'joint', 'pretrain', 'meta', 'pretrain_w_all'])
 	parser.add_argument('-num-aux-tasks', type=int, default=4)
+	# Self-supervised augmentations
 	parser.add_argument('-use-random', action='store_true')
 	parser.add_argument('-use-noise', action='store_true')
-	parser.add_argument('-use-neg-loss', action='store_true')
+	parser.add_argument('-use-crop', action='store_true')
+	parser.add_argument('-use-rotation', action='store_true')
+	parser.add_argument('-use-horzflip', action='store_true')
+
 	add_model_opts(parser)
 	add_trainer_args(parser)
 	add_weighter_args(parser)
@@ -54,7 +60,13 @@ def train_model(
 	if not os.path.exists(chkpt_path):
 		os.makedirs(chkpt_path)
 	all_classes = [*chosen_classes, *monitor_classes]
-	out_class_dict = {chosen_key: NUM_PER_SUPERCLASS for chosen_key in all_classes}
+	out_class_dict = {}
+	for chosen_key in all_classes:
+		num_classes = NUM_PER_SUPERCLASS
+		if 'rotation' in chosen_key:
+			num_classes = 4
+		out_class_dict[chosen_key] = num_classes
+
 	ft = False
 	use_last = False
 	if model is None:
@@ -89,6 +101,17 @@ def train_model(
 # 	4. Multitasking with meta-learned data-parameters
 #   4. Multitasking with data-augmentation
 
+def add_ssl_tasks(main_superclass, chosen_set, opts):
+	if opts.use_random:
+		chosen_set.append('rand_{}'.format(main_superclass))
+	if opts.use_noise:
+		chosen_set.append('noise_{}'.format(main_superclass))
+	if opts.use_crop:
+		chosen_set.append('crop_{}'.format(main_superclass))
+	if opts.use_rotation:
+		chosen_set.append('rotation_{}'.format(main_superclass))
+	if opts.use_horzflip:
+		chosen_set.append('horzflip_{}'.format(main_superclass))
 
 def main():
 	opts = get_options()
@@ -109,17 +132,14 @@ def main():
 				decoupled_weights=opts.decoupled_weights
 			)
 	chosen_set = list(cifar100_super_classes.keys())
-	if chosen_set.index('people') < opts.num_aux_tasks:
+	main_superclass = opts.main_super_class
+	if chosen_set.index(main_superclass) < opts.num_aux_tasks:
 		opts.num_aux_tasks += 1
 	chosen_set = chosen_set[:opts.num_aux_tasks]
-	if 'people' not in chosen_set:
-		chosen_set.append('people')
-		if opts.use_random:
-			chosen_set.append('rand_people')
-		if opts.use_noise:
-			chosen_set.append('noise_people')
-		if opts.use_neg_loss:
-			chosen_set.append('negloss_people')
+
+	if main_superclass not in chosen_set:
+		chosen_set.append(main_superclass)
+	add_ssl_tasks(main_superclass, chosen_set, opts)
 	for seed in range(opts.num_runs):
 		print('Currently on {}/{}'.format(seed + 1, opts.num_runs))
 		set_random_seed(seed)
@@ -141,7 +161,7 @@ def main():
 		elif opts.mode == 'pretrain':
 			# 3. Pretrain with other tasks. Finetune on main task
 			for main_class in chosen_set:
-				if main_class != 'people':
+				if main_class != main_superclass:
 					continue
 				this_id = "pretr_{}".format(main_class)
 				monitor_classes = [x for x in chosen_set if x != main_class]
@@ -156,7 +176,7 @@ def main():
 		elif opts.mode == 'pretrain_w_all':
 			# 3. Pretrain all tasks. Finetune on main task
 			this_id = "pretr_all"
-			main_class = 'people'
+			main_class = main_superclass
 			monitor_classes = [main_class]
 			this_res, model = train_model(
 											algo, dataset, opts, seed, chosen_set,
@@ -174,7 +194,7 @@ def main():
 		elif opts.mode == 'meta':
 			# 4. Multitasking with meta-learned auxiliary task weights
 			# for main_class in chosen_set:
-			main_class = 'people'
+			main_class = main_superclass
 			monitor_classes = [main_class]
 			this_id = "meta_{}".format(main_class)
 			this_res, model = train_model(
