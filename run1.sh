@@ -7,7 +7,7 @@ exp_fldr=$4
 
 expname='default_ntasks='$auxTasks'-lr.'$lr'-optim.'$optim
 echo 'Default ' $expname ' and save file is ' $expname'.txt'
-python -u main.py -lr $lr -num-aux-tasks $auxTasks -mode pretrain_w_all -num-runs 3 -weight-strgy default -optimizer $optim -exp-name $exp_fldr'/default/'$expname -train-epochs 400 -patience 400 &> run_logs/$expname'.txt'
+python -u main.py -lr $lr -num-aux-tasks $auxTasks -mode pretrain_w_all -num-runs 3 -weight-strgy default -optimizer $optim -exp-name $exp_fldr'/default/'$expname -train-epochs 400 -patience 400  &> run_logs/$expname'.txt'
 tail -n 5 run_logs/$expname'.txt'
 
 

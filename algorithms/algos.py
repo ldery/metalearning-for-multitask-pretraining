@@ -28,7 +28,7 @@ import higher
 # NOTE [ldery] - put a freeze on adding anymore hyper-params until the ones you have are understood !
 def add_trainer_args(parser):
 	parser.add_argument('-train-epochs', type=int, default=100)
-	parser.add_argument('-patience', type=int, default=50)
+	parser.add_argument('-patience', type=int, default=30)
 	parser.add_argument('-lr-patience', type=int, default=4)
 	parser.add_argument('-optimizer', type=str, default='Adam')
 	parser.add_argument('-ft-optimizer', type=str, default='Adam')
@@ -386,7 +386,7 @@ class Trainer(object):
 		monitor_list = kwargs['monitor_list']
 		monitor_metric, best_epoch = [], -1
 		# setup the class norms : 
-		class_norms = self.create_weights(kwargs['classes'], init='ones', requires_grad=self.decoupled_weights)
+		class_norms = self.create_weights(kwargs['classes'], init='random', requires_grad=self.decoupled_weights)
 		# setup the meta-weights
 		if kwargs['learn_meta_weights']:
 			assert len(monitor_list) == 1, 'We can only learn meta-weights when there is 1 primary class'
