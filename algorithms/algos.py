@@ -14,7 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from torch.optim import Adam, AdamW, SGD
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR
 from collections import defaultdict
 from os import path
 import pickle
@@ -109,7 +109,8 @@ class Trainer(object):
 		# Reduce lr by 0.5 on plateau
 		# save the learning rate
 		self.lr = lr
-		lr_scheduler = ReduceLROnPlateau(optim, factor=0.5, patience=opts.lr_patience, min_lr=1e-5)
+		#lr_scheduler = ReduceLROnPlateau(optim, factor=0.5, patience=opts.lr_patience, min_lr=1e-5)
+		lr_scheduler = StepLR(optim, self.train_epochs // 3, gamma=0.1, last_epoch=-1)
 		return optim, lr_scheduler
 
 	def _get_numcorrect(self, output, targets, mask=None, chxnet_src=False):
@@ -204,6 +205,14 @@ class Trainer(object):
 			if g_ is not None:
 				norm += (g_**2).sum()
 		return np.sqrt(norm.item())
+	
+	def dot_prod(self, g1, g2):
+		total = 0.0
+		for p1, p2 in zip(g1, g2):
+			if p1 is None or p2 is None:
+				continue
+			total += (p1 * p2).sum()
+		return total.item()
 
 	def run_epoch_w_meta(self, model, group_iter, optim, primary_iter, meta_weights, class_norms, primary_keys=None):
 		# assert alpha_generator is not None, 'Need to specify a weight generating strategy'
@@ -215,6 +224,8 @@ class Trainer(object):
 		prim_idxs = np.random.choice(len(primary_batches), size=len(group_iter), replace=True)
 		if not hasattr(self, 'dp_stats'):
 			self.dp_stats = defaultdict(list)
+		if not hasattr(self, 'weight_stats'):
+			self.weight_stats = defaultdict(list)
 		start_ = len(self.dp_stats['people'])
 		for group_idx, batch in enumerate(group_iter):
 			# We do not have enough samples to continue, so wrap around
@@ -256,9 +267,10 @@ class Trainer(object):
 						class_norms[key].grad.div_(normalization)
 					if meta_weights[key].grad is not None:
 						meta_weights[key].grad.div_(normalization)
-						self.dp_stats[key].append(-meta_weights[key].grad.item())
+						self.dp_stats[key].append(self.dot_prod(meta_grad, grads))
 					else:
 						self.dp_stats[key].append(0.0)
+					self.weight_stats[key].append((meta_weights[key].item(), meta_weights[key].grad.item(), meta_norm, key_norm, self.dp_stats[key][-1]))
 
 # 			with torch.no_grad():
 # 				for k, v in meta_weights.items():
@@ -269,6 +281,7 @@ class Trainer(object):
 			with torch.no_grad():
 				self.update_meta_weights(meta_weights, update_algo=self.alpha_update_algo)
 				if self.decoupled_weights:
+					pdb.set_trace()
 					self.update_meta_weights(class_norms, update_algo='class_linear')
 				this_weights = get_softmax(meta_weights) if self.alpha_update_algo == 'softmax' else meta_weights
 
@@ -386,11 +399,11 @@ class Trainer(object):
 		monitor_list = kwargs['monitor_list']
 		monitor_metric, best_epoch = [], -1
 		# setup the class norms : 
-		class_norms = self.create_weights(kwargs['classes'], init='random', requires_grad=self.decoupled_weights)
+		class_norms = self.create_weights(kwargs['classes'], init='ones', requires_grad=self.decoupled_weights)
 		# setup the meta-weights
 		if kwargs['learn_meta_weights']:
 			assert len(monitor_list) == 1, 'We can only learn meta-weights when there is 1 primary class'
-			meta_weights = self.create_weights(kwargs['classes'], init='ones', norm=1.0)
+			meta_weights = self.create_weights(kwargs['classes'], init='random', norm=3.0)
 			if self.alpha_update_algo == 'softmax':
 				this_weights = get_softmax(meta_weights)
 				pprint(this_weights)
@@ -433,6 +446,9 @@ class Trainer(object):
 					to_avg.append(v[1])
 
 			monitor_metric.append(np.mean(to_avg))
+# 			lr_scheduler.step()
+# 			self.meta_lr_sgd = optim.state_dict()['param_groups'][0]['lr']
+# 			print(self.meta_lr_sgd)
 
 			test_iter = dataset._get_iterator(to_eval, kwargs['batch_sz'], split='test', shuffle=False)
 			test_results = self.run_epoch(model, test_iter, None)
@@ -468,6 +484,7 @@ class Trainer(object):
 		if kwargs['learn_meta_weights']:
 			pickle.dump(self.dp_stats, open(os.path.join(chkpt_path, 'dp_stats.pkl'), 'wb'))
 			pickle.dump({k:v for k, v in self.metrics.items()}, open(os.path.join(chkpt_path, 'metrics.pkl'), 'wb'))
+			pickle.dump({k:v for k, v in self.weight_stats.items()}, open(os.path.join(chkpt_path, 'weight_stats.pkl'), 'wb'))
 		# Load the best path
 		if kwargs['use_last_chkpt']:
 			model.load_state_dict(torch.load(last_path))

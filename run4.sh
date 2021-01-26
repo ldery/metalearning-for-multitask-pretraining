@@ -7,6 +7,7 @@ lr=$4
 slr=$5
 optim=$6
 exp_fldr=$7
+wlr=$8
 split='val'
 init='rand'
 nruns=3
@@ -15,13 +16,13 @@ nruns=3
 sub='selfsup'
 
 sgd_arr=($blr $lr $slr)
-weight_arr=(5e-2)
+weight_arr=($wlr)
 
 for c in "${sgd_arr[@]}"
 do
 	for k in "${weight_arr[@]}"
 	do
-		lr=$c
+		lr=$lr
 		expname=$upAlg'.meta.'$split'.w_lr='$k'_sgd_lr='$c'_lr='$lr'_ntasks='$auxTasks'.'$init'.'$optim
 		echo 'Performing on '$expname
 		if [[ "$exp_fldr" == *"$sub"* ]]; then
