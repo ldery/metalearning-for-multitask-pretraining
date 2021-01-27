@@ -432,7 +432,10 @@ class Trainer(object):
 		monitor_list = kwargs['monitor_list']
 		monitor_metric, best_epoch = [], -1
 		# setup the class norms : 
-		class_norms = self.create_weights(kwargs['classes'], init='ones', requires_grad=self.decoupled_weights)
+		class_norms = self.create_weights(
+											kwargs['classes'], init='ones', norm=len(kwargs['classes']),
+											requires_grad=self.decoupled_weights
+										)
 
 		# setup the meta-weights
 		if kwargs['learn_meta_weights']:
