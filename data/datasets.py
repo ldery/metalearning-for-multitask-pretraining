@@ -35,22 +35,24 @@ class CIFAR100:
 		self._group_data(flatten=kwargs['flatten'])
 		self.aug_fns = augmentations_and_fns()
 
+	# Map old classes to new classes under super-class.
 	def _create_new_classes(self, orig_dict, reversed_name_dict, flatten):
 		this_dict_ = defaultdict(list)
 		for (x, y) in orig_dict:
-			key_ = reversed_name_dict[y][0]
-			new_class = reversed_name_dict[y][1]
+			key_ = reversed_name_dict[y][0]  # Get the super-class for the class of this image
+			new_class = reversed_name_dict[y][1] # Get the new id within this super-class
 			if len(this_dict_[key_]) == 0:
-				this_dict_[key_] = [[] for _ in range(NUM_PER_SUPERCLASS)]
+				this_dict_[key_] = [[] for _ in range(CLASS_SIZES[key_])]
 			this_dict_[key_][new_class].append(x.flatten() if flatten else x)
 		return this_dict_
 
 	def _group_data(self, flatten=False):
-		# get the reversed dictionary
+		# get the reversed dictionary. Gives mapping of current class to id within superclass
 		reversed_dict = {}
 		for k, v in self.super_classlist.items():
 			for c_id in v:
 				reversed_dict[c_id] = (k, self.super_classlist[k].index(c_id))
+
 		# Split the train into a train and test
 		permutation = np.random.permutation(len(self.train))
 		train_idxs = permutation[:int(0.8 * len(self.train))]
@@ -60,8 +62,7 @@ class CIFAR100:
 				train_list.append(pair)
 			else:
 				val_list.append(pair)
-		# Todo [ldery]
-		# We can add new classes corresponding to transformations on the data
+
 		self.train_dict_ = self._create_new_classes(train_list, reversed_dict, flatten)
 		self.val_dict_ = self._create_new_classes(val_list, reversed_dict, flatten)
 		self.test_dict_ = self._create_new_classes(self.test, reversed_dict, flatten)
@@ -74,15 +75,18 @@ class CIFAR100:
 			chosen_dict = self.test_dict_
 		else:
 			assert "Invalid value of split given {}".format(split)
+
+		# Calcuate the examples per-sub-clas. This equalizes the # of examples per-class in each batch.
+		# Maybe might be better to not do this. Confirm - Todo [ldery]
 		per_sub_class = math.ceil(batch_sz / (NUM_PER_SUPERCLASS * len(classes)))
-		per_sub_class = max(per_sub_class, NUM_PER_SUPERCLASS)  # Just using this because NUM_PER_SUPERCLASS = 5
+		per_sub_class = max(per_sub_class, NUM_PER_SUPERCLASS)
 		assert per_sub_class > 0, 'Samples per-sub-class must be > 0'
 
 		# Setup the random idxs
 		iter_idx_dict = defaultdict(list)
 		max_iters = -1
 		for class_ in classes:
-			if is_augmentation(class_):
+			if is_augmentation(class_): # Will apply augmentation to the chosen members of the class
 				continue
 			class_name = class_
 			data_ = chosen_dict[class_name]
@@ -98,7 +102,7 @@ class CIFAR100:
 		# TODO [ldery] :
 		# This approach means some of the data might not be looked at. Look into it.
 		max_iters = int(max_iters / per_sub_class)
-		assert max_iters > 0
+		assert max_iters > 0, "The maximum number of examples for a class must be > 0"
 		num_iters = 0
 		while True:
 			batch_dict = {}
@@ -110,6 +114,8 @@ class CIFAR100:
 				data_ = chosen_dict[class_name]
 				idxs = iter_idx_dict[class_]
 				xs, ys = [], []
+				# Todo [ldery] - write a test to make sure it's a different batch shown at every iteration
+				# Tested [used main below]
 				for id_, vals in enumerate(idxs):
 					xs.extend([data_[id_][i] for i in vals[:per_sub_class]])
 					ys.extend([id_ for _ in range(per_sub_class)])
@@ -144,12 +150,14 @@ def visualize(dict_, dict_name):
 
 
 if __name__ == '__main__':
-	import pdb
 	import os
 	import matplotlib.pyplot as plt
 	data = CIFAR100(flatten=False)
+	b1 = None
 	for batch in data._get_iterator(['flowers', 'aquatic_mammals'], 32):
-		print('Iterating')
+		b1 = batch if b1 is None else b1
+		b2 = batch
+		pdb.set_trace()
 	pdb.set_trace()
 	# visualize(data.train_dict_, 'train')
 	# visualize(data.val_dict_, 'val')

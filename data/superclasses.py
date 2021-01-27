@@ -33,5 +33,6 @@ cifar100_super_classes = {
 	'vehicles_2': [41, 69, 81, 85, 89]
 }
 
+NUM_PER_SUPERCLASS = 5
 CLASS_SIZES = {k:len(v) for k, v in cifar100_super_classes.items()}
 CLASS_SIZES['rotation'] = 4
