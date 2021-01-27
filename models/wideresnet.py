@@ -80,9 +80,11 @@ class WideResNet(nn.Module):
 			self.add_module("fc-{}".format(head_name), this_head)
 		self.nChannels = nChannels[3]
 
+	# Added by ldery. Adds a new head to the model
 	def add_heads(self, class_dict, is_cuda=True):
 		for head_name, num_classes in class_dict.items():
 			this_head = getattr(self, "fc-{}".format(head_name), None)
+			# This head is already present. We can skip
 			if this_head is not None:
 				continue
 			this_head = nn.Linear(self.nChannels, num_classes)
@@ -90,6 +92,7 @@ class WideResNet(nn.Module):
 				this_head = this_head.cuda()
 			self.add_module("fc-{}".format(head_name), this_head)
 
+	# use if we just want the logits before the classifier heads
 	def apply_body(self, x):
 		out = self.conv1(x)
 		out = self.block1(out)
@@ -100,6 +103,7 @@ class WideResNet(nn.Module):
 		out = out.view(-1, self.nChannels)
 		return out
 
+	# gives classification outputs
 	def apply_head(self, out, head_name=None):
 		this_fc = getattr(self, "fc-{}".format(head_name), None)
 		assert this_fc is not None, 'Need to give a valid headname {}'.format(head_name)
