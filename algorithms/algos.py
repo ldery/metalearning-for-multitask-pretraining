@@ -227,18 +227,28 @@ class Trainer(object):
 		if not hasattr(self, 'weight_stats'):
 			self.weight_stats = defaultdict(list)
 		start_ = len(self.dp_stats['people'])
+		loss_fn = model.get_loss_fn(model.loss_fn_name, reduction='mean')
 		for group_idx, batch in enumerate(group_iter):
 			# We do not have enough samples to continue, so wrap around
 			optim.zero_grad()
+
 			override_dict = {'lr': [torch.tensor([self.meta_lr_sgd]).cuda()]}
-			with higher.innerloop_ctx(model, optim, override=override_dict) as (fmodel, diffopt):
+			with higher.innerloop_ctx(model, optim, track_higher_grads=True, override=override_dict) as (fmodel, diffopt):
 				# Learn the updated model
 				this_weights = get_softmax(meta_weights) if self.alpha_update_algo == 'softmax' else meta_weights
-				for inner_idx in range(self.inner_iters):
-					if group_idx + inner_idx > len(group_iter) - 1:
-						break
-					loss_ = self.run_batch(fmodel, group_iter[group_idx + inner_idx], None, this_weights, class_norms)
-					diffopt.step(loss_)
+
+				total_loss, alpha_sum = 0.0, 0.0
+				for k, v in batch.items():
+					loss_ = loss_fn(fmodel(v[0], head_name=k), v[1]) * this_weights[k]
+					alpha_sum += this_weights[k]
+					total_loss += loss_
+				total_loss /= alpha_sum.item()
+				diffopt.step(total_loss)
+# 				for inner_idx in range(self.inner_iters):
+# 					if group_idx + inner_idx > len(group_iter) - 1:
+# 						break
+# 					loss_ = self.run_batch(fmodel, group_iter[group_idx + inner_idx], None, this_weights, class_norms)
+# 					diffopt.step(loss_)
 
 				prim_batch = primary_batches[prim_idxs[group_idx]]
 				# Compute the loss on the meta-val set
@@ -246,11 +256,13 @@ class Trainer(object):
 					assert 'rand' not in primary_key, 'The primary key is wrong : {}'.format(primary_key)
 					results = self.run_model(xs, ys, fmodel, group=primary_key, reduct_='mean')
 				# Compute Normalization factor
+
 				meta_grad = torch.autograd.grad(results[0], fmodel.parameters(), retain_graph=True, allow_unused=True)
 				meta_norm = self.calc_norm(meta_grad)
 
 				# Do the backward pass
 				results[0].backward()
+
 
 			del fmodel
 			del diffopt
@@ -260,18 +272,21 @@ class Trainer(object):
 				result = self.run_model(xs, ys, model, group=key, reduct_='mean')
 				grads = torch.autograd.grad(result[0], model.parameters(), allow_unused=True)
 				key_norm = self.calc_norm(grads)
-
+				dot_prod = self.dot_prod(meta_grad, grads)
+				if np.sign(dot_prod) == np.sign(meta_weights[key].grad.item()):
+					print('Sign is diff : ', key, dot_prod, -meta_weights[key].grad.item(), dot_prod)
+# 					pdb.set_trace()
 				with torch.no_grad():
 					normalization = key_norm * meta_norm * self.meta_lr_sgd
 					if self.decoupled_weights and class_norms[key].grad is not None:
 						class_norms[key].grad.div_(normalization)
 					if meta_weights[key].grad is not None:
 						meta_weights[key].grad.div_(normalization)
-						self.dp_stats[key].append(self.dot_prod(meta_grad, grads))
+						self.dp_stats[key].append(dot_prod)
 					else:
 						self.dp_stats[key].append(0.0)
 					self.weight_stats[key].append((meta_weights[key].item(), meta_weights[key].grad.item(), meta_norm, key_norm, self.dp_stats[key][-1]))
-
+# 			print('---'*30)
 # 			with torch.no_grad():
 # 				for k, v in meta_weights.items():
 # 					if v.grad is not None:
@@ -281,7 +296,6 @@ class Trainer(object):
 			with torch.no_grad():
 				self.update_meta_weights(meta_weights, update_algo=self.alpha_update_algo)
 				if self.decoupled_weights:
-					pdb.set_trace()
 					self.update_meta_weights(class_norms, update_algo='class_linear')
 				this_weights = get_softmax(meta_weights) if self.alpha_update_algo == 'softmax' else meta_weights
 
@@ -378,7 +392,7 @@ class Trainer(object):
 			inits = np.array([1e-7]*len(classes))
 
 		if norm > 0:
-			inits = inits / norm
+			inits = norm * inits / (sum(inits))
 		# Create the weights
 		weights = {class_: torch.tensor([inits[id_]]).float().cuda() for id_, class_ in enumerate(classes)}
 		if requires_grad:
@@ -446,7 +460,7 @@ class Trainer(object):
 					to_avg.append(v[1])
 
 			monitor_metric.append(np.mean(to_avg))
-# 			lr_scheduler.step()
+			lr_scheduler.step()
 # 			self.meta_lr_sgd = optim.state_dict()['param_groups'][0]['lr']
 # 			print(self.meta_lr_sgd)
 
