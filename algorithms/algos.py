@@ -251,10 +251,14 @@ class Trainer(object):
 
 				total_loss, alpha_sum = 0.0, 0.0
 				for k, v in batch.items():
-					loss_ = loss_fn(fmodel(v[0], head_name=k), v[1]) * this_weights[k] * class_norms[k]
+					loss_ = loss_fn(fmodel(v[0], head_name=k), v[1])
+					task_grads[k] = torch.autograd.grad(loss_, fmodel.parameters(), retain_graph=True, allow_unused=True)
+
+					# Now apply the weighting
+					loss_ = loss_ * this_weights[k] * class_norms[k]
 					alpha_sum += (this_weights[k] * class_norms[k])
 					total_loss += loss_
-					task_grads[k] = torch.autograd.grad(loss_, fmodel.parameters(), retain_graph=True, allow_unused=True)
+
 				total_loss /= alpha_sum.item()
 				diffopt.step(total_loss)
 
@@ -490,6 +494,8 @@ class Trainer(object):
 			monitor_metric.append(np.mean(to_avg))
 			if self.use_scheduler:
 				lr_scheduler.step()
+				self.meta_lr_sgd = optim.state_dict()['param_groups'][0]['lr']
+				print('Using Stepped LR : ', self.meta_lr_sgd)
 
 			test_iter = dataset._get_iterator(to_eval, kwargs['batch_sz'], split='test', shuffle=False)
 			test_results = self.run_epoch(model, test_iter, None)
