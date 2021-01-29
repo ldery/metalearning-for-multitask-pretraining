@@ -292,8 +292,8 @@ class Trainer(object):
 				grads = task_grads[key]
 				key_norm = self.calc_norm(grads)
 				dot_prod = self.dot_prod(meta_grad, grads)
-				if np.sign(dot_prod) == np.sign(meta_weights[key].grad.item()):
-					print('Sign is diff : ', key, dot_prod, -meta_weights[key].grad.item(), dot_prod)
+# 				if np.sign(dot_prod) == np.sign(meta_weights[key].grad.item()):
+# 					print('Sign is diff : ', key, dot_prod, -meta_weights[key].grad.item(), dot_prod)
 
 				# Apply appropriate normalization and save statistics
 				with torch.no_grad():
@@ -445,7 +445,7 @@ class Trainer(object):
 		if kwargs['learn_meta_weights']:
 			assert len(monitor_list) == 1, 'We can only learn meta-weights when there is at least 1 primary class'
 			norm = 1.0 if self.alpha_update_algo == 'softmax' else len(kwargs['classes'])
-			meta_weights = self.create_weights(kwargs['classes'], init='random', norm=norm)
+			meta_weights = self.create_weights(kwargs['classes'], init='ones', norm=norm)
 			if self.alpha_update_algo == 'softmax':
 				this_weights = get_softmax(meta_weights)
 				pprint(this_weights)
