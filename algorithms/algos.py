@@ -243,7 +243,7 @@ class Trainer(object):
 			optim.zero_grad()
 
 			# Take the inner-loop step
-			override_dict = {'lr': [torch.tensor([self.meta_lr_sgd]).cuda()]}
+			override_dict = {'lr': [torch.tensor([0.0]).cuda()]}
 			task_grads = {}
 			with higher.innerloop_ctx(model, optim, track_higher_grads=True, override=override_dict) as (fmodel, diffopt):
 				# Learn the updated model
@@ -259,8 +259,8 @@ class Trainer(object):
 					alpha_sum += (this_weights[k] * class_norms[k])
 					total_loss += loss_
 
-				total_loss /= alpha_sum.item()
-				diffopt.step(total_loss)
+# 				total_loss /= alpha_sum.item()
+# 				diffopt.step(total_loss)
 
 # 				# Todo [ldery] - discuss with Graham and Ameet about the implications of this
 # 				for inner_idx in range(self.inner_iters):
@@ -279,8 +279,8 @@ class Trainer(object):
 				meta_grad = torch.autograd.grad(results[0], fmodel.parameters(), retain_graph=True, allow_unused=True)
 				meta_norm = self.calc_norm(meta_grad)
 
-				# Do the backward pass
-				results[0].backward()
+# 				# Do the backward pass
+# 				results[0].backward()
 
 
 			del fmodel
@@ -294,20 +294,18 @@ class Trainer(object):
 				dot_prod = self.dot_prod(meta_grad, grads)
 # 				if np.sign(dot_prod) == np.sign(meta_weights[key].grad.item()):
 # 					print('Sign is diff : ', key, dot_prod, -meta_weights[key].grad.item(), dot_prod)
-
 				# Apply appropriate normalization and save statistics
 				with torch.no_grad():
 					if self.use_cosine:
-						normalization = key_norm * meta_norm * self.meta_lr_sgd
+						normalization = key_norm * meta_norm
 					else:
 						normalization = self.meta_lr_sgd
 					if self.decoupled_weights and class_norms[key].grad is not None:
 						class_norms[key].grad.div_(normalization)
-					if meta_weights[key].grad is not None:
-						meta_weights[key].grad.div_(normalization)
-						self.dp_stats[key].append(dot_prod)
-					else:
-						self.dp_stats[key].append(0.0)
+					assert meta_weights[key].grad is None, 'This should be none at the moment'
+					meta_weights[key].grad = torch.zeros_like(meta_weights[key]) - dot_prod
+					meta_weights[key].grad.div_(normalization)
+					self.dp_stats[key].append(dot_prod)
 					self.weight_stats[key].append((meta_weights[key].item(), meta_weights[key].grad.item(), meta_norm, key_norm, self.dp_stats[key][-1]))
 
 
