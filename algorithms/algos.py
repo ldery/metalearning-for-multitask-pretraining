@@ -234,15 +234,18 @@ class Trainer(object):
 		# Collect statistics for post-hoc analysis
 		if not hasattr(self, 'dp_stats'):
 			self.dp_stats = defaultdict(list)
+			start_ = 0
+		else:
+			start_ = len(self.dp_stats[list(self.dp_stats.keys())[0]])
 		if not hasattr(self, 'weight_stats'):
 			self.weight_stats = defaultdict(list)
 
-		start_ = len(self.dp_stats['people'])
 		for group_idx, batch in enumerate(group_iter):
 
 			optim.zero_grad()
 
 			# Take the inner-loop step
+			# This is set to 0.0 so we have no look-ahead step
 			override_dict = {'lr': [torch.tensor([0.0]).cuda()]}
 			task_grads = {}
 			with higher.innerloop_ctx(model, optim, track_higher_grads=True, override=override_dict) as (fmodel, diffopt):
@@ -259,16 +262,6 @@ class Trainer(object):
 					alpha_sum += (this_weights[k] * class_norms[k])
 					total_loss += loss_
 
-# 				total_loss /= alpha_sum.item()
-# 				diffopt.step(total_loss)
-
-# 				# Todo [ldery] - discuss with Graham and Ameet about the implications of this
-# 				for inner_idx in range(self.inner_iters):
-# 					if group_idx + inner_idx > len(group_iter) - 1:
-# 						break
-# 					loss_ = self.run_batch(fmodel, group_iter[group_idx + inner_idx], None, this_weights, class_norms)
-# 					diffopt.step(loss_)
-
 				prim_batch = primary_batches[prim_idxs[group_idx]]
 				# Compute the loss on the meta-val set
 				for primary_key, (xs, ys) in prim_batch.items():
@@ -278,9 +271,6 @@ class Trainer(object):
 				# For computing statistics
 				meta_grad = torch.autograd.grad(results[0], fmodel.parameters(), retain_graph=True, allow_unused=True)
 				meta_norm = self.calc_norm(meta_grad)
-
-# 				# Do the backward pass
-# 				results[0].backward()
 
 
 			del fmodel
@@ -292,8 +282,7 @@ class Trainer(object):
 				grads = task_grads[key]
 				key_norm = self.calc_norm(grads)
 				dot_prod = self.dot_prod(meta_grad, grads)
-# 				if np.sign(dot_prod) == np.sign(meta_weights[key].grad.item()):
-# 					print('Sign is diff : ', key, dot_prod, -meta_weights[key].grad.item(), dot_prod)
+
 				# Apply appropriate normalization and save statistics
 				with torch.no_grad():
 					if self.use_cosine:
@@ -332,7 +321,10 @@ class Trainer(object):
 		for k, v in stats.items():
 			summary[k] = (v[0] / v[2], v[1].item() / v[2])
 
-		res = (np.array(list(self.dp_stats.values())) > 0)*1.0
+		try:
+			res = (np.array(list(self.dp_stats.values())) > 0)*1.0
+		except:
+			pdb.set_trace()
 		print({k: np.mean(v[-start_:]) for k, v in self.dp_stats.items()}, res.sum(axis=-1))
 		return summary
 	

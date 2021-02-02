@@ -32,7 +32,7 @@ class CIFAR100:
 		self.train = torchvision.datasets.CIFAR100(save_path, train=True, download=True, transform=tform)
 		self.test = torchvision.datasets.CIFAR100(save_path, train=False, download=True, transform=tform)
 		self.super_classlist = cifar100_super_classes
-		self._group_data(flatten=kwargs['flatten'])
+		self._group_data(flatten=kwargs['flatten'], prim_datafrac=kwargs['prim_datafrac'], prim_key=kwargs['prim_key'])
 		self.aug_fns = augmentations_and_fns()
 
 	# Map old classes to new classes under super-class.
@@ -46,7 +46,7 @@ class CIFAR100:
 			this_dict_[key_][new_class].append(x.flatten() if flatten else x)
 		return this_dict_
 
-	def _group_data(self, flatten=False):
+	def _group_data(self, flatten=False, prim_datafrac=1.0, prim_key='people'):
 		# get the reversed dictionary. Gives mapping of current class to id within superclass
 		reversed_dict = {}
 		for k, v in self.super_classlist.items():
@@ -66,6 +66,19 @@ class CIFAR100:
 		self.train_dict_ = self._create_new_classes(train_list, reversed_dict, flatten)
 		self.val_dict_ = self._create_new_classes(val_list, reversed_dict, flatten)
 		self.test_dict_ = self._create_new_classes(self.test, reversed_dict, flatten)
+		
+		# Need to down-size the dataset
+		if prim_datafrac < 1.0:
+			# Todo [ldery] - you should extend this for when the primary task is multiple tasks.
+			# Code checked through pdb run.
+			for set_ in [self.train_dict_, self.val_dict_]:
+				prim_data = set_[prim_key]
+				max_class_len = max([len(x) for x in prim_data])
+				num_samples = int(prim_datafrac * max_class_len)
+				assert num_samples > 0, 'Invalid number of samples requested'
+				for idx in range(len(prim_data)):
+					prim_data[idx] = prim_data[idx][:num_samples]
+				set_[prim_key] = prim_data
 
 	def _get_iterator(self, classes, batch_sz, split='train', shuffle=True):
 		chosen_dict = self.train_dict_
@@ -79,7 +92,6 @@ class CIFAR100:
 		# Calcuate the examples per-sub-clas. This equalizes the # of examples per-class in each batch.
 		# Maybe might be better to not do this. Confirm - Todo [ldery]
 		per_sub_class = math.ceil(batch_sz / (NUM_PER_SUPERCLASS * len(classes)))
-		per_sub_class = max(per_sub_class, NUM_PER_SUPERCLASS)
 		assert per_sub_class > 0, 'Samples per-sub-class must be > 0'
 
 		# Setup the random idxs
@@ -102,6 +114,7 @@ class CIFAR100:
 		# TODO [ldery] :
 		# This approach means some of the data might not be looked at. Look into it.
 		max_iters = int(max_iters / per_sub_class)
+
 		assert max_iters > 0, "The maximum number of examples for a class must be > 0"
 		num_iters = 0
 		while True:
@@ -152,12 +165,11 @@ def visualize(dict_, dict_name):
 if __name__ == '__main__':
 	import os
 	import matplotlib.pyplot as plt
-	data = CIFAR100(flatten=False)
+	data = CIFAR100(flatten=False, prim_datafrac=0.1, prim_key='medium-sized_mammals')
 	b1 = None
-	for batch in data._get_iterator(['flowers', 'aquatic_mammals'], 32):
-		b1 = batch if b1 is None else b1
-		b2 = batch
-		pdb.set_trace()
+	all_b = []
+	for batch in data._get_iterator(['medium-sized_mammals', 'small_mammals'], 16, split='val'):
+		all_b.append(batch)
 	pdb.set_trace()
 	# visualize(data.train_dict_, 'train')
 	# visualize(data.val_dict_, 'val')

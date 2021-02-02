@@ -31,6 +31,8 @@ def get_options():
 	parser.add_argument('-use-crop', action='store_true')
 	parser.add_argument('-use-rotation', action='store_true')
 	parser.add_argument('-use-horzflip', action='store_true')
+	# Data-regimes
+	parser.add_argument('-prim-datafrac', type=float, default=1.0, help='What fraction of the primary task to use.')
 
 	add_model_opts(parser)
 	add_trainer_args(parser)
@@ -119,7 +121,7 @@ def main():
 	_ = set_random_seed(opts.seed)
 
 	# Get the data
-	dataset = CIFAR100(flatten=False)
+	dataset = CIFAR100(flatten=False, prim_datafrac=opts.prim_datafrac, prim_key=opts.main_super_class)
 
 	# Get the trainer
 	result_dict = defaultdict(list)

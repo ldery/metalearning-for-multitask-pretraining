@@ -11,6 +11,7 @@
 
 
 cifar100_super_classes = {
+	'small_mammals': [36, 50, 65, 74, 80],
 	'flowers': [54, 62, 70, 82, 92],
 	'food_containers': [9, 10, 16, 28, 61],
 	'aquatic_mammals': [4, 30, 55, 72, 95],
@@ -27,7 +28,6 @@ cifar100_super_classes = {
 	'non-insect_invertebrates': [26, 45, 77, 79, 99],
 	'people': [2, 11, 35, 46, 98],
 	'reptiles': [27, 29, 44, 78, 93],
-	'small_mammals': [36, 50, 65, 74, 80],
 	'trees': [47, 52, 56, 59, 96],
 	'vehicles_1': [8, 13, 48, 58, 90],
 	'vehicles_2': [41, 69, 81, 85, 89]
