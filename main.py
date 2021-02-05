@@ -17,7 +17,7 @@ from copy import deepcopy
 def get_options():
 	parser = ArgumentParser(description='Testbed for Task Weighting Code')\
 	# Main Class
-	parser.add_argument('-main-super-class', type=str, default='people')
+	parser.add_argument('-main-super-class', type=str, default='medium-sized_mammals')
 	parser.add_argument('-log-comment', type=str, default='m4m_cache')
 	parser.add_argument('-seed', type=int, default=1)
 	parser.add_argument('-num-runs', type=int, default=3, help='number of reruns so we can estimate confidence interval')
@@ -173,13 +173,13 @@ def main():
 		elif opts.mode == 'pretrain':
 
 			# 3. Pretrain with other tasks. Finetune on main task
-			this_id = "pretr_{}".format(main_super_class)
-			monitor_classes = [x for x in chosen_set if x != main_super_class]
+			this_id = "pretr_{}".format(main_superclass)
+			monitor_classes = [x for x in chosen_set if x != main_superclass]
 			this_chosen = monitor_classes
 			this_res, model = train_model(algo, dataset, opts, seed, this_chosen, monitor_classes, id_=this_id)
 
 			# Now we do the training based on the class specific data.
-			chosen_classes, monitor_classes = [main_super_class], [main_super_class]
+			chosen_classes, monitor_classes = [main_superclass], [main_superclass]
 			this_res, _ = train_model(algo, dataset, opts, seed, chosen_classes, monitor_classes, id_=this_id, model=model)
 			for k, v in this_res.items():
 				result_dict[k].append(v[1])
