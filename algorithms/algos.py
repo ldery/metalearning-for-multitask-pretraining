@@ -56,6 +56,7 @@ def add_trainer_args(parser):
 	parser.add_argument('-no-use-cosine', action='store_true', help='Do not use cosine instead of dot product')
 	parser.add_argument('-decoupled-weights', action='store_true', help='Decouple the norm from the proportion of the auxiliary task')
 	parser.add_argument('-use-lr-scheduler', action='store_true', help='Whether to use an lr scheduler')
+	parser.add_argument('-bn-type', type=str, default='separate', choices=['grouped', 'separate'])
 
 
 def get_softmax(weights):
@@ -75,7 +76,8 @@ class Trainer(object):
 					self, train_epochs, patience,
 					meta_lr_weights=0.01, meta_lr_sgd=0.1,
 					meta_split='train', alpha_update_algo='MoE',
-					use_cosine=True, decoupled_weights=False, use_scheduler=False
+					use_cosine=True, decoupled_weights=False,
+					use_scheduler=False, bn_type='separate'
 				):
 		self.chkpt_every = 10  # save to checkpoint
 		self.train_epochs = train_epochs
@@ -89,6 +91,7 @@ class Trainer(object):
 		self.decoupled_weights = decoupled_weights
 		self.inner_iters = 1 # Todo [ldery] change this into a hyper-parameter that is passed in
 		self.use_scheduler = use_scheduler
+		self.bn_type = bn_type
 		print('Using {} as the update algorithm'.format(self.alpha_update_algo))
 
 	def get_optim(self, model, opts, ft=False):
@@ -147,7 +150,14 @@ class Trainer(object):
 		for batch in data_iter:
 			if optim is not None:
 				optim.zero_grad()
-			total_loss = self.run_batch(model, batch, stats, alpha_generator, class_norms)
+
+			if self.bn_type == 'grouped':
+				total_loss = self.run_batch_grouped(model, batch, stats, alpha_generator, class_norms)
+			elif self.bn_type == 'separate':
+				total_loss = self.run_batch_separate(model, batch, stats, alpha_generator, class_norms)
+			else:
+				raise ValueError
+
 			if optim is not None:
 				total_loss.backward()  # backprop the accumulated gradient
 				torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
@@ -160,7 +170,7 @@ class Trainer(object):
 
 	# An optimized version that allows us to batch together data from different tasks
 	# This has implications for the gradient - so use with caution
-	def run_batch(self, model, batch, stats, alpha_generator, class_norms):
+	def run_batch_grouped(self, model, batch, stats, alpha_generator, class_norms, task_grads=None):
 		loss_fn = model.get_loss_fn(model.loss_fn_name, reduction='mean')
 		key_boundaries, prev_pos = {}, 0
 		bulk_x = []
@@ -189,11 +199,37 @@ class Trainer(object):
 			m_out = model(this_out, head_name=head_name, head_only=True)
 			loss_ = loss_mul_fact * loss_fn(m_out, pos_pair[-1])
 
+			if task_grads is not None:
+				task_grads[key] = torch.autograd.grad(loss_, model.parameters(), retain_graph=True, allow_unused=True)
+
 			if stats is not None:
 				stats[key][0] += loss_.item() * len(pos_pair[-1])
 				stats[key][1] += self._get_numcorrect(m_out, pos_pair[-1])
 				stats[key][2] += len(pos_pair[-1])
 
+			if alpha_generator is not None:
+				total_loss = total_loss + alpha_generator[key] * loss_ * class_norms[key]
+				alpha_sum += alpha_generator[key]
+			else:
+				alpha_sum += 1.0
+				total_loss += loss_
+		if isinstance(alpha_sum, torch.Tensor):
+			alpha_sum = alpha_sum.item()
+		return total_loss / alpha_sum
+
+	def run_batch_separate(self, model, batch, stats, alpha_generator, class_norms, task_grads=None):
+		loss_fn = model.get_loss_fn(model.loss_fn_name, reduction='mean')
+		total_loss, alpha_sum = 0.0, 0.0
+		for key, data in batch.items():
+			m_out = model(data[0], head_name=key)
+			loss_ = loss_fn(m_out, data[1])
+			if task_grads is not None:
+				task_grads[key] = torch.autograd.grad(loss_, model.parameters(), retain_graph=True, allow_unused=True)
+
+			if stats is not None:
+				stats[key][0] += loss_.item() * len(data[-1])
+				stats[key][1] += self._get_numcorrect(m_out, data[-1])
+				stats[key][2] += len(data[-1])
 			if alpha_generator is not None:
 				total_loss = total_loss + alpha_generator[key] * loss_ * class_norms[key]
 				alpha_sum += alpha_generator[key]
@@ -218,7 +254,8 @@ class Trainer(object):
 			if p1 is None or p2 is None:
 				continue
 			total += (p1 * p2).sum()
-		return total.item()
+		total = total.item() if isinstance(total, torch.Tensor) else total
+		return total
 
 	# Does training that meta-learns the task weights
 	def run_epoch_w_meta(self, model, group_iter, optim, primary_iter, meta_weights, class_norms, primary_keys=None):
@@ -240,6 +277,7 @@ class Trainer(object):
 		if not hasattr(self, 'weight_stats'):
 			self.weight_stats = defaultdict(list)
 
+
 		for group_idx, batch in enumerate(group_iter):
 
 			optim.zero_grad()
@@ -252,15 +290,12 @@ class Trainer(object):
 				# Learn the updated model
 				this_weights = get_softmax(meta_weights) if self.alpha_update_algo == 'softmax' else meta_weights
 
-				total_loss, alpha_sum = 0.0, 0.0
-				for k, v in batch.items():
-					loss_ = loss_fn(fmodel(v[0], head_name=k), v[1])
-					task_grads[k] = torch.autograd.grad(loss_, fmodel.parameters(), retain_graph=True, allow_unused=True)
-
-					# Now apply the weighting
-					loss_ = loss_ * this_weights[k] * class_norms[k]
-					alpha_sum += (this_weights[k] * class_norms[k])
-					total_loss += loss_
+				if self.bn_type == 'grouped':
+					self.run_batch_grouped(fmodel, batch, None, this_weights, class_norms, task_grads=task_grads)
+				elif self.bn_type == 'separate':
+					self.run_batch_separate(fmodel, batch, None, this_weights, class_norms, task_grads=task_grads)
+				else:
+					raise ValueError
 
 				prim_batch = primary_batches[prim_idxs[group_idx]]
 				# Compute the loss on the meta-val set
@@ -306,7 +341,13 @@ class Trainer(object):
 				this_weights = get_softmax(meta_weights) if self.alpha_update_algo == 'softmax' else meta_weights
 
 			# Now take a true gradient step with the corrected weights
-			total_loss = self.run_batch(model, batch, stats, this_weights, class_norms)
+			if self.bn_type == 'grouped':
+				total_loss = self.run_batch_grouped(model, batch, stats, this_weights, class_norms)
+			elif self.bn_type == 'separate':
+				total_loss = self.run_batch_separate(model, batch, stats, this_weights, class_norms)
+			else:
+				raise ValueError
+
 			if optim is not None:
 				total_loss.backward()  # backprop the accumulated gradient
 				torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
@@ -321,11 +362,7 @@ class Trainer(object):
 		for k, v in stats.items():
 			summary[k] = (v[0] / v[2], v[1].item() / v[2])
 
-		try:
-			res = (np.array(list(self.dp_stats.values())) > 0)*1.0
-		except:
-			pdb.set_trace()
-		print({k: np.mean(v[-start_:]) for k, v in self.dp_stats.items()}, res.sum(axis=-1))
+		print({k: np.mean(np.array(v)[start_:], axis=0) for k, v in self.dp_stats.items()})
 		return summary
 	
 	# Perform update on meta-related weights.

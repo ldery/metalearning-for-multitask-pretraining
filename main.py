@@ -127,7 +127,7 @@ def main():
 	result_dict = defaultdict(list)
 	algo = Trainer(
 				opts.train_epochs, opts.patience, meta_lr_weights=opts.meta_lr_weights,
-				meta_lr_sgd=opts.meta_lr_sgd, meta_split=opts.meta_split,
+				meta_lr_sgd=opts.meta_lr_sgd, meta_split=opts.meta_split, bn_type=opts.bn_type,
 				alpha_update_algo=opts.alpha_update_algo, use_cosine=(not opts.no_use_cosine),
 				decoupled_weights=opts.decoupled_weights, use_scheduler=opts.use_lr_scheduler
 			)

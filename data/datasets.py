@@ -71,7 +71,7 @@ class CIFAR100:
 		if prim_datafrac < 1.0:
 			# Todo [ldery] - you should extend this for when the primary task is multiple tasks.
 			# Code checked through pdb run.
-			for set_ in [self.train_dict_]: #, self.val_dict_
+			for set_ in [self.train_dict_] : #, self.val_dict_]:
 				prim_data = set_[prim_key]
 				max_class_len = max([len(x) for x in prim_data])
 				num_samples = int(prim_datafrac * max_class_len)
@@ -79,6 +79,7 @@ class CIFAR100:
 				for idx in range(len(prim_data)):
 					prim_data[idx] = prim_data[idx][:num_samples]
 				set_[prim_key] = prim_data
+# 			pdb.set_trace()
 
 	def _get_iterator(self, classes, batch_sz, split='train', shuffle=True):
 		chosen_dict = self.train_dict_
