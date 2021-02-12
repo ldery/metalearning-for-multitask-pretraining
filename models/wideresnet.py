@@ -81,7 +81,7 @@ class WideResNet(nn.Module):
 		self.nChannels = nChannels[3]
 
 	# Added by ldery. Adds a new head to the model
-	def add_heads(self, class_dict, is_cuda=True):
+	def add_heads(self, class_dict, is_cuda=True, init_fn=None):
 		for head_name, num_classes in class_dict.items():
 			this_head = getattr(self, "fc-{}".format(head_name), None)
 			# This head is already present. We can skip
@@ -90,6 +90,8 @@ class WideResNet(nn.Module):
 			this_head = nn.Linear(self.nChannels, num_classes)
 			if is_cuda:
 				this_head = this_head.cuda()
+			if init_fn is not None:
+				init_fn(this_head)
 			self.add_module("fc-{}".format(head_name), this_head)
 
 	# use if we just want the logits before the classifier heads
