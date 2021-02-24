@@ -108,4 +108,4 @@ class WideResnet(Model):
 		self.model.apply(weight_init('kaiming_normal'))
 
 	def add_heads(self, class_dict, is_cuda=True):
-		self.model.add_heads(class_dict, is_cuda=is_cuda)
+		self.model.add_heads(class_dict, is_cuda=is_cuda, init_fn=weight_init('kaiming_normal'))
