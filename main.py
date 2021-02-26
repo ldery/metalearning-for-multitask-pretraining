@@ -31,6 +31,8 @@ def get_options():
 	parser.add_argument('-use-crop', action='store_true')
 	parser.add_argument('-use-rotation', action='store_true')
 	parser.add_argument('-use-horzflip', action='store_true')
+	parser.add_argument('-use-corrupted', action='store_true', help='make a corrupted version of the primary task an aux task')
+	parser.add_argument('-corrupt-frac', type=float, default=0.0, help='fraction of the data to corrupt')
 	# Data-regimes
 	parser.add_argument('-prim-datafrac', type=float, default=1.0, help='What fraction of the primary task to use.')
 
@@ -69,7 +71,12 @@ def train_model(
 	out_class_dict = {}
 	for chosen_key in all_classes:
 		key = 'rotation' if 'rotation' in chosen_key else chosen_key
-		out_class_dict[chosen_key] = CLASS_SIZES[key]
+		if chosen_key in CLASS_SIZES:
+			out_class_dict[chosen_key] = CLASS_SIZES[key]
+		else:
+			out_class_dict[chosen_key] = NUM_PER_SUPERCLASS
+	# todo [ldery] - remember to account for this. This adds a new dev-head to the model
+	out_class_dict["dev-{}".format(primary_class)] = CLASS_SIZES[primary_class]
 
 	ft = False
 	use_last = False
@@ -112,6 +119,8 @@ def add_ssl_tasks(main_superclass, chosen_set, opts):
 		chosen_set.append('rotation_{}'.format(main_superclass))
 	if opts.use_horzflip:
 		chosen_set.append('horzflip_{}'.format(main_superclass))
+	if opts.use_corrupted:
+		chosen_set.append('corrupted-{}'.format(main_superclass))
 
 def main():
 	opts = get_options()
@@ -121,7 +130,11 @@ def main():
 	_ = set_random_seed(opts.seed)
 
 	# Get the data
-	dataset = CIFAR100(flatten=False, prim_datafrac=opts.prim_datafrac, prim_key=opts.main_super_class)
+	dataset = CIFAR100(
+						flatten=False, prim_datafrac=opts.prim_datafrac,
+						prim_key=opts.main_super_class, use_corrupted=opts.use_corrupted,
+						corrupt_frac=opts.corrupt_frac
+					)
 
 	# Get the trainer
 	result_dict = defaultdict(list)
@@ -149,6 +162,7 @@ def main():
 
 	for seed in range(opts.num_runs):
 		print('Currently on {}/{}'.format(seed + 1, opts.num_runs))
+		algo.reset()
 		set_random_seed(seed)
 		# Note - monitor classes are the classes used to do validation for early stopping / checkpointing
 		if opts.mode == 'tgt_only':
