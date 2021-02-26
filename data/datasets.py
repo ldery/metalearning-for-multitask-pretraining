@@ -32,6 +32,9 @@ class CIFAR100:
 		self.train = torchvision.datasets.CIFAR100(save_path, train=True, download=True, transform=tform)
 		self.test = torchvision.datasets.CIFAR100(save_path, train=False, download=True, transform=tform)
 		self.super_classlist = cifar100_super_classes
+		self.use_corrupted = kwargs['use_corrupted']
+		self.corrupt_frac = kwargs['corrupt_frac']
+		self.prim_key = kwargs['prim_key']
 		self._group_data(flatten=kwargs['flatten'], prim_datafrac=kwargs['prim_datafrac'], prim_key=kwargs['prim_key'])
 		self.aug_fns = augmentations_and_fns()
 
@@ -41,9 +44,18 @@ class CIFAR100:
 		for (x, y) in orig_dict:
 			key_ = reversed_name_dict[y][0]  # Get the super-class for the class of this image
 			new_class = reversed_name_dict[y][1] # Get the new id within this super-class
+			num_classes = CLASS_SIZES[key_]
 			if len(this_dict_[key_]) == 0:
-				this_dict_[key_] = [[] for _ in range(CLASS_SIZES[key_])]
+				this_dict_[key_] = [[] for _ in range(num_classes)]
 			this_dict_[key_][new_class].append(x.flatten() if flatten else x)
+			if key_ == self.prim_key and self.use_corrupted:
+				corrupt_key = 'corrupted-{}'.format(self.prim_key)
+				if len(this_dict_[corrupt_key]) == 0:
+					this_dict_[corrupt_key] = [[] for _ in range(num_classes)]
+				probs = np.array([self.corrupt_frac / (num_classes - 1)]*num_classes)
+				probs[new_class] = 1.0 - probs[new_class]
+				corrupt_class = np.random.choice(range(num_classes), size=1, p=probs)[0]
+				this_dict_[corrupt_key][corrupt_class].append(x.flatten() if flatten else x)
 		return this_dict_
 
 	def _group_data(self, flatten=False, prim_datafrac=1.0, prim_key='people'):
