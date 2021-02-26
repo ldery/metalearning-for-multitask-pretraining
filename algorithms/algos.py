@@ -23,6 +23,7 @@ import pdb
 from pprint import pprint
 from copy import deepcopy
 import higher
+from sklearn.linear_model import RidgeClassifier
 
 
 # NOTE [ldery] - put a freeze on adding anymore hyper-params until the ones you have are understood !
@@ -70,6 +71,34 @@ def get_softmax(weights):
 	softmax = F.softmax(joint_vec, dim=-1)
 	return {k: v for k, v in zip(keys, softmax)}
 
+
+def get_start_of_heads(model):
+	pnames = []
+	head_start = -1
+	for ind, (pname, _) in enumerate(model.named_parameters()):
+		pnames.append(pname)
+		if 'fc' in pname and head_start < 0:
+			head_start = ind
+	# Do a double check here
+	for ind, pname in enumerate(pnames):
+		if ind < head_start:
+			assert 'fc' not in pname, 'Invalid head start'
+		else:
+			assert 'fc' in pname, 'Invalid head_start'
+	return head_start
+
+def get_head_dict(model):
+	head_dicts = [{}, {}]
+	head_start = get_start_of_heads(model)
+	for idx, (pname, param) in enumerate(model.named_parameters()):
+		if idx < head_start:
+			continue
+		# TODO [ldery - might want to remove this later]
+		if 'corrupt' in pname:
+			head_dicts[0][pname] = param.cpu().detach().numpy()
+		else:
+			head_dicts[1][pname] = param.cpu().detach().numpy()
+	return head_dicts
 
 class Trainer(object):
 	def __init__(
@@ -256,6 +285,31 @@ class Trainer(object):
 			total += (p1 * p2).sum()
 		total = total.item() if isinstance(total, torch.Tensor) else total
 		return total
+	
+	def reset(self):
+		# Collect statistics for post-hoc analysis
+		if hasattr(self, 'dp_stats'):
+			del self.dp_stats
+			assert not hasattr(self, 'dp_stats'), 'dp_stats hasnt been deleted'
+		if hasattr(self, 'weight_stats'):
+			del self.weight_stats
+			assert not hasattr(self, 'weight_stats'), 'weight_stats hasnt been deleted'
+	
+	def set_dev_head(self, model, data, dev_key):
+		xs, ys = data
+		x_embed = model(xs, body_only=True)
+		# Fit a linear model
+		xs, ys = x_embed.cpu().detach().numpy(), ys.cpu().detach().numpy()
+		clf = RidgeClassifier(alpha=100).fit(xs, ys)
+		w, b = torch.tensor(clf.coef_).cuda(), torch.tensor(clf.intercept_).cuda()
+		# Now update the dev-head with the new linear model
+		# Todo [ldery] - if this works need to move this to model code
+		with torch.no_grad():
+			# get the dev_head
+			dev_head = getattr(model.model, "fc-{}".format(dev_key), None)
+			dev_head.weight.data.copy_(w)
+			dev_head.bias.data.copy_(b)
+		# Now replace the dev_head with the linear model
 
 	# Does training that meta-learns the task weights
 	def run_epoch_w_meta(self, model, group_iter, optim, primary_iter, meta_weights, class_norms, primary_keys=None):
@@ -267,6 +321,7 @@ class Trainer(object):
 		group_iter = [batch for batch in group_iter]
 		# Allow re-using the meta-val set if we run out.
 		prim_idxs = np.random.choice(len(primary_batches), size=len(group_iter), replace=True)
+		dev_idxs =  np.random.choice(len(group_iter), size=len(group_iter), replace=True)
 
 		# Collect statistics for post-hoc analysis
 		if not hasattr(self, 'dp_stats'):
@@ -276,8 +331,10 @@ class Trainer(object):
 			start_ = len(self.dp_stats[list(self.dp_stats.keys())[0]])
 		if not hasattr(self, 'weight_stats'):
 			self.weight_stats = defaultdict(list)
+		if not hasattr(self, 'head_stats'):
+			self.head_stats = defaultdict(list)
 
-
+		head_start = get_start_of_heads(model)
 		for group_idx, batch in enumerate(group_iter):
 
 			optim.zero_grad()
@@ -298,10 +355,16 @@ class Trainer(object):
 					raise ValueError
 
 				prim_batch = primary_batches[prim_idxs[group_idx]]
+
 				# Compute the loss on the meta-val set
 				for primary_key, (xs, ys) in prim_batch.items():
 					assert 'rand' not in primary_key, 'The primary key is wrong : {}'.format(primary_key)
-					results = self.run_model(xs, ys, fmodel, group=primary_key, reduct_='mean')
+					# test - changing the primary key head group
+					# Todo [ldery] - rememeber that this was introduced to bring in a new dev head
+					dev_key = "dev-{}".format(primary_key)
+					meta_batch = group_iter[dev_idxs[group_idx]]
+					self.set_dev_head(fmodel, meta_batch[primary_key], dev_key)
+					results = self.run_model(xs, ys, fmodel, group=dev_key, reduct_='mean')
 
 				# For computing statistics
 				meta_grad = torch.autograd.grad(results[0], fmodel.parameters(), retain_graph=True, allow_unused=True)
@@ -316,7 +379,7 @@ class Trainer(object):
 			for key, _ in batch.items():
 				grads = task_grads[key]
 				key_norm = self.calc_norm(grads)
-				dot_prod = self.dot_prod(meta_grad, grads)
+				dot_prod = self.dot_prod(meta_grad[:head_start], grads[:head_start])
 
 				# Apply appropriate normalization and save statistics
 				with torch.no_grad():
@@ -332,13 +395,41 @@ class Trainer(object):
 					self.dp_stats[key].append(dot_prod)
 					self.weight_stats[key].append((meta_weights[key].item(), meta_weights[key].grad.item(), meta_norm, key_norm, self.dp_stats[key][-1]))
 
+			# Todo [ldery] - remember to remove this at some point
+			##### Start tracking #########
+			# Compute l2distance between heads and the dot-products of the gradients of the heads
+			main_head = [task_grads[primary_keys[0]][ind] for ind, (pname, _) in enumerate(model.named_parameters()) if 'fc-{}'.format(primary_keys[0]) in pname]
+			corr_head = [task_grads["corrupted-{}".format(primary_keys[0])][ind] for ind, (pname, _) in enumerate(model.named_parameters()) if 'fc-corrupted-{}'.format(primary_keys[0]) in pname]
+			for k1, k2 in zip(main_head, corr_head):
+				dp = (k1 * k2).sum(dim=-1)
+				k1_norm, k2_norm = torch.norm(k1, p=2, dim=-1), torch.norm(k2, p=2, dim=-1)
+				self.head_stats['dp_stats'].append((dp / (k1_norm * k2_norm)).cpu().detach().numpy())
 
+			main_head = [param for pname, param in model.named_parameters() if 'fc-{}'.format(primary_keys[0]) in pname]
+			corr_head = [param for pname, param in model.named_parameters() if 'fc-corrupted-{}'.format(primary_keys[0]) in pname]
+			l2_dist = 0.0
+			for idx, (k1, k2) in enumerate(zip(main_head, corr_head)):
+				l2_dist = ((k1 - k2)**2).sum() / k1.numel()
+				self.head_stats['l2_stats.{}'.format(idx)].append(np.sqrt(l2_dist.item()))
+				l2_rel = (((k1 - k2) / k1 )**2).sum() / k1.numel()
+				self.head_stats['l2_stats.rel.{}'.format(idx)].append(np.sqrt(l2_rel.item()))
+
+			ms = []
+			for k, (x, _) in batch.items():
+				m_out = model(x, head_name=k)
+				m_out = F.softmax(m_out, dim=-1)
+				ms.append(m_out)
+			kl = torch.log(ms[0]/ms[1])*ms[0]
+			self.head_stats['kl_stats'].append(kl.sum(axis=-1).mean().item())
+			##### End tracking #########
+			
+			# Todo [ldery] - reinstate
 			# Update the task level weightings
-			with torch.no_grad():
-				self.update_meta_weights(meta_weights, update_algo=self.alpha_update_algo)
-				if self.decoupled_weights:
-					self.update_meta_weights(class_norms, update_algo='class_linear')
-				this_weights = get_softmax(meta_weights) if self.alpha_update_algo == 'softmax' else meta_weights
+# 			with torch.no_grad():
+# 				self.update_meta_weights(meta_weights, update_algo=self.alpha_update_algo)
+# 				if self.decoupled_weights:
+# 					self.update_meta_weights(class_norms, update_algo='class_linear')
+			this_weights = get_softmax(meta_weights) if self.alpha_update_algo == 'softmax' else meta_weights
 
 			# Now take a true gradient step with the corrected weights
 			if self.bn_type == 'grouped':
@@ -558,6 +649,9 @@ class Trainer(object):
 			pickle.dump(self.dp_stats, open(os.path.join(chkpt_path, 'dp_stats.pkl'), 'wb'))
 			pickle.dump({k:v for k, v in self.metrics.items()}, open(os.path.join(chkpt_path, 'metrics.pkl'), 'wb'))
 			pickle.dump({k:v for k, v in self.weight_stats.items()}, open(os.path.join(chkpt_path, 'weight_stats.pkl'), 'wb'))
+			pickle.dump({k:v for k, v in self.head_stats.items()}, open(os.path.join(chkpt_path, 'head_stats.pkl'), 'wb'))
+			pickle.dump(get_head_dict(model), open(os.path.join(chkpt_path, 'head_dicts_tsne.pkl'), 'wb'))
+
 
 		# Load the best path
 		if kwargs['use_last_chkpt']:
