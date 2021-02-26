@@ -359,7 +359,7 @@ class Trainer(object):
 				# Compute the loss on the meta-val set
 				for primary_key, (xs, ys) in prim_batch.items():
 					assert 'rand' not in primary_key, 'The primary key is wrong : {}'.format(primary_key)
-					# test - changing the primary key head group
+
 					# Todo [ldery] - rememeber that this was introduced to bring in a new dev head
 					dev_key = "dev-{}".format(primary_key)
 					meta_batch = group_iter[dev_idxs[group_idx]]
