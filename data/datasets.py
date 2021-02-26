@@ -53,7 +53,7 @@ class CIFAR100:
 				if len(this_dict_[corrupt_key]) == 0:
 					this_dict_[corrupt_key] = [[] for _ in range(num_classes)]
 				probs = np.array([self.corrupt_frac / (num_classes - 1)]*num_classes)
-				probs[new_class] = 1.0 - probs[new_class]
+				probs[new_class] = 1.0 - self.corrupt_frac
 				corrupt_class = np.random.choice(range(num_classes), size=1, p=probs)[0]
 				this_dict_[corrupt_key][corrupt_class].append(x.flatten() if flatten else x)
 		return this_dict_
