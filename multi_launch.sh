@@ -1,8 +1,9 @@
 #!/bin/bash
-#
-#SBATCH --job-name=static_baselines_smalldata.1
-#SBATCH -e /home/ldery/meta4multitask_all/meta4multitask/m4m_cache/slurm_logs/smalldata.static.1.err
-#SBATCH -o /home/ldery/meta4multitask_all/meta4multitask/m4m_cache/slurm_logs/smalldata.static.1.out
+
+
+#SBATCH --job-name=static_baselines_smalldata.2
+#SBATCH -e /home/ldery/meta4multitask_all/meta4multitask/m4m_cache/slurm_logs/smalldata.static.2.err
+#SBATCH -o /home/ldery/meta4multitask_all/meta4multitask/m4m_cache/slurm_logs/smalldata.static.2.out
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --time=20:00:00
@@ -26,15 +27,25 @@
 # echo './run1.sh 1 1e-4 Adam smallData_static\n'
 # ./run1.sh 1 1e-4 Adam smallData_static
 
-echo './run1.sh 1 3e-3 Adam smallData_static\n'
-./run1.sh 1 3e-3 Adam smallData_static
+# # VARY BATCH-NORM TYPE
+# echo './run1.sh 1 1e-3 Adam smallData_static 16 16 0.05 separate'
+# ./run1.sh 1 1e-3 Adam smallData_static 16 16 0.05 separate
 
-echo './run1.sh 1 5e-3 Adam smallData_static\n'
-./run1.sh 1 5e-3 Adam smallData_static
+# echo './run1.sh 1 1e-3 Adam smallData_static 16 16 0.05 grouped'
+# ./run1.sh 1 1e-3 Adam smallData_static 16 16 0.05 grouped
 
-# echo './run1.sh 10 5e-3\n'
-# ./run1.sh 10 5e-3
-# echo './run1.sh 10 1e-3\n'
-# ./run1.sh 10 1e-3
-# echo './run1.sh 10 5e-4\n'
-# ./run1.sh 10 5e-4
+
+# # Vary Learning Rate
+# echo './run1.sh 1 1e-4 Adam smallData_static 16 16 0.05 separate'
+# ./run1.sh 1 1e-4 Adam smallData_static 16 16 0.05 separate
+
+# echo './run1.sh 1 1e-4 Adam smallData_static 16 16 0.05 grouped'
+# ./run1.sh 1 1e-4 Adam smallData_static 16 16 0.05 grouped
+
+
+# # VARY BATCH-SIZE TYPE
+echo './run1.sh 1 1e-3 Adam smallData_static 8 8 0.05 separate'
+./run1.sh 1 1e-3 Adam smallData_static 8 8 0.05 separate
+
+echo './run1.sh 1 1e-3 Adam smallData_static 8 8 0.05 grouped'
+./run1.sh 1 1e-3 Adam smallData_static 8 8 0.05 grouped

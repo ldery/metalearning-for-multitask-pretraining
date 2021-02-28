@@ -58,6 +58,7 @@ def add_trainer_args(parser):
 	parser.add_argument('-decoupled-weights', action='store_true', help='Decouple the norm from the proportion of the auxiliary task')
 	parser.add_argument('-use-lr-scheduler', action='store_true', help='Whether to use an lr scheduler')
 	parser.add_argument('-bn-type', type=str, default='separate', choices=['grouped', 'separate'])
+	parser.add_argument('-meta-reg-alpha', type=float, default=1e2, help='The regularization for getting the dev-head via linear regression')
 
 
 def get_softmax(weights):
@@ -106,7 +107,8 @@ class Trainer(object):
 					meta_lr_weights=0.01, meta_lr_sgd=0.1,
 					meta_split='train', alpha_update_algo='MoE',
 					use_cosine=True, decoupled_weights=False,
-					use_scheduler=False, bn_type='separate'
+					use_scheduler=False, bn_type='separate',
+					meta_reg_alpha=100
 				):
 		self.chkpt_every = 10  # save to checkpoint
 		self.train_epochs = train_epochs
@@ -121,7 +123,8 @@ class Trainer(object):
 		self.inner_iters = 1 # Todo [ldery] change this into a hyper-parameter that is passed in
 		self.use_scheduler = use_scheduler
 		self.bn_type = bn_type
-		print('Using {} as the update algorithm'.format(self.alpha_update_algo))
+		self.meta_reg_alpha = meta_reg_alpha
+		print('Using {} as the update algorithm. MetaRegAlpha = {}'.format(self.alpha_update_algo, self.meta_reg_alpha))
 
 	def get_optim(self, model, opts, ft=False):
 		if not ft:
@@ -300,7 +303,8 @@ class Trainer(object):
 		x_embed = model(xs, body_only=True)
 		# Fit a linear model
 		xs, ys = x_embed.cpu().detach().numpy(), ys.cpu().detach().numpy()
-		clf = RidgeClassifier(alpha=100).fit(xs, ys)
+		clf = RidgeClassifier(alpha=self.meta_reg_alpha).fit(xs, ys)
+# 		print('Score : ', clf.score(xs, ys))
 		w, b = torch.tensor(clf.coef_).cuda(), torch.tensor(clf.intercept_).cuda()
 		# Now update the dev-head with the new linear model
 		# Todo [ldery] - if this works need to move this to model code
@@ -378,7 +382,7 @@ class Trainer(object):
 			# Also collect statistics
 			for key, _ in batch.items():
 				grads = task_grads[key]
-				key_norm = self.calc_norm(grads)
+				key_norm = self.calc_norm(grads[:head_start])
 				dot_prod = self.dot_prod(meta_grad[:head_start], grads[:head_start])
 
 				# Apply appropriate normalization and save statistics
@@ -395,40 +399,13 @@ class Trainer(object):
 					self.dp_stats[key].append(dot_prod)
 					self.weight_stats[key].append((meta_weights[key].item(), meta_weights[key].grad.item(), meta_norm, key_norm, self.dp_stats[key][-1]))
 
-			# Todo [ldery] - remember to remove this at some point
-			##### Start tracking #########
-			# Compute l2distance between heads and the dot-products of the gradients of the heads
-			main_head = [task_grads[primary_keys[0]][ind] for ind, (pname, _) in enumerate(model.named_parameters()) if 'fc-{}'.format(primary_keys[0]) in pname]
-			corr_head = [task_grads["corrupted-{}".format(primary_keys[0])][ind] for ind, (pname, _) in enumerate(model.named_parameters()) if 'fc-corrupted-{}'.format(primary_keys[0]) in pname]
-			for k1, k2 in zip(main_head, corr_head):
-				dp = (k1 * k2).sum(dim=-1)
-				k1_norm, k2_norm = torch.norm(k1, p=2, dim=-1), torch.norm(k2, p=2, dim=-1)
-				self.head_stats['dp_stats'].append((dp / (k1_norm * k2_norm)).cpu().detach().numpy())
 
-			main_head = [param for pname, param in model.named_parameters() if 'fc-{}'.format(primary_keys[0]) in pname]
-			corr_head = [param for pname, param in model.named_parameters() if 'fc-corrupted-{}'.format(primary_keys[0]) in pname]
-			l2_dist = 0.0
-			for idx, (k1, k2) in enumerate(zip(main_head, corr_head)):
-				l2_dist = ((k1 - k2)**2).sum() / k1.numel()
-				self.head_stats['l2_stats.{}'.format(idx)].append(np.sqrt(l2_dist.item()))
-				l2_rel = (((k1 - k2) / k1 )**2).sum() / k1.numel()
-				self.head_stats['l2_stats.rel.{}'.format(idx)].append(np.sqrt(l2_rel.item()))
-
-			ms = []
-			for k, (x, _) in batch.items():
-				m_out = model(x, head_name=k)
-				m_out = F.softmax(m_out, dim=-1)
-				ms.append(m_out)
-			kl = torch.log(ms[0]/ms[1])*ms[0]
-			self.head_stats['kl_stats'].append(kl.sum(axis=-1).mean().item())
-			##### End tracking #########
-			
 			# Todo [ldery] - reinstate
 			# Update the task level weightings
-# 			with torch.no_grad():
-# 				self.update_meta_weights(meta_weights, update_algo=self.alpha_update_algo)
-# 				if self.decoupled_weights:
-# 					self.update_meta_weights(class_norms, update_algo='class_linear')
+			with torch.no_grad():
+				self.update_meta_weights(meta_weights, update_algo=self.alpha_update_algo)
+				if self.decoupled_weights:
+					self.update_meta_weights(class_norms, update_algo='class_linear')
 			this_weights = get_softmax(meta_weights) if self.alpha_update_algo == 'softmax' else meta_weights
 
 			# Now take a true gradient step with the corrected weights
@@ -441,6 +418,7 @@ class Trainer(object):
 
 			if optim is not None:
 				total_loss.backward()  # backprop the accumulated gradient
+				# Todo [ldery] - either include this in speculative step or remove
 				torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
 				optim.step()
 

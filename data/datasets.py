@@ -83,7 +83,7 @@ class CIFAR100:
 		if prim_datafrac < 1.0:
 			# Todo [ldery] - you should extend this for when the primary task is multiple tasks.
 			# Code checked through pdb run.
-			for set_ in [self.train_dict_] : #, self.val_dict_]:
+			for set_ in [self.train_dict_, self.val_dict_]:
 				prim_data = set_[prim_key]
 				max_class_len = max([len(x) for x in prim_data])
 				num_samples = int(prim_datafrac * max_class_len)
@@ -126,8 +126,13 @@ class CIFAR100:
 				max_iters = min(max_iters, *[len(x) for x in data_])
 		# TODO [ldery] :
 		# This approach means some of the data might not be looked at. Look into it.
+		this_iters = max_iters
 		max_iters = int(max_iters / per_sub_class)
-		assert max_iters > 0, "The maximum number of examples for a class must be > 0"
+		if max_iters <= 0:
+			# We don't have enough data-points to use this per-sub-class-value
+			per_sub_class = int(this_iters / 2)
+			assert per_sub_class > 0, "Need to have at least 1 example per sub-class. Not enough data"
+			max_iters = int(this_iters / per_sub_class)
 		num_iters = 0
 		while True:
 			batch_dict = {}

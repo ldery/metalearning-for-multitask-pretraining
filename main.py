@@ -76,7 +76,8 @@ def train_model(
 		else:
 			out_class_dict[chosen_key] = NUM_PER_SUPERCLASS
 	# todo [ldery] - remember to account for this. This adds a new dev-head to the model
-	out_class_dict["dev-{}".format(primary_class)] = CLASS_SIZES[primary_class]
+	if primary_class is not None:
+		out_class_dict["dev-{}".format(primary_class)] = CLASS_SIZES[primary_class]
 
 	ft = False
 	use_last = False
@@ -142,7 +143,8 @@ def main():
 				opts.train_epochs, opts.patience, meta_lr_weights=opts.meta_lr_weights,
 				meta_lr_sgd=opts.meta_lr_sgd, meta_split=opts.meta_split, bn_type=opts.bn_type,
 				alpha_update_algo=opts.alpha_update_algo, use_cosine=(not opts.no_use_cosine),
-				decoupled_weights=opts.decoupled_weights, use_scheduler=opts.use_lr_scheduler
+				decoupled_weights=opts.decoupled_weights, use_scheduler=opts.use_lr_scheduler,
+				meta_reg_alpha=opts.meta_reg_alpha
 			)
 
 	# Setup the auxiliary tasks
