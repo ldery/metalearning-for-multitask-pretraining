@@ -372,7 +372,7 @@ class Trainer(object):
 
 				# For computing statistics
 				meta_grad = torch.autograd.grad(results[0], fmodel.parameters(), retain_graph=True, allow_unused=True)
-				meta_norm = self.calc_norm(meta_grad)
+				meta_norm = self.calc_norm(meta_grad[:head_start])
 
 
 			del fmodel

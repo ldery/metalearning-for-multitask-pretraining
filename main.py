@@ -252,6 +252,9 @@ def main():
 	save_path = os.path.join(opts.log_comment, opts.exp_name, "results.pkl")
 	with open(save_path, 'wb') as handle:
 		pickle.dump(result_dict, handle)
+	save_path = os.path.join(opts.log_comment, opts.exp_name, "args.pkl")
+	with open(save_path, 'wb') as handle:
+		pickle.dump(opts, handle)
 
 
 if __name__ == '__main__':
