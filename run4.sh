@@ -2,36 +2,27 @@
 
 upAlg=$1
 auxTasks=$2
-blr=$3
-lr=$4
-slr=$5
-optim=$6
-exp_fldr=$7
-wlr=$8
+ftbsz=$3
+bsz=$4
+mbsz=$5
+lr=$6
+optim=$7
+exp_fldr=$8
+aReg=$9
 split='val'
-init='rand'
 nruns=3
+primfrac=0.05
+sgdlr=0
 
+weight_arr=(1e-1 1e-2)
 
-sub='selfsup'
-
-sgd_arr=($blr $lr $slr)
-weight_arr=($wlr)
-
-for c in "${sgd_arr[@]}"
+for k in "${weight_arr[@]}"
 do
-	for k in "${weight_arr[@]}"
-	do
-		lr=$lr
-		expname=$upAlg'.meta.'$split'.w_lr='$k'_sgd_lr='$c'_lr='$lr'_ntasks='$auxTasks'.'$init'.'$optim
-		echo 'Performing on '$expname
-		if [[ "$exp_fldr" == *"$sub"* ]]; then
-			python -u main.py -num-aux-tasks $auxTasks -alpha-update-algo $upAlg -mode meta -num-runs $nruns -exp-name $exp_fldr'/meta/'$expname -meta-lr-weights $k  -meta-lr-sgd $c -meta-split $split -lr $lr -optimizer $optim -use-crop -use-rotation &> run_logs/$expname'.txt'
-			tail -n 5 run_logs/$expname'.txt'
-		else
-			python -u main.py -num-aux-tasks $auxTasks -alpha-update-algo $upAlg -mode meta -num-runs $nruns -exp-name $exp_fldr'/meta/'$expname -meta-lr-weights $k  -meta-lr-sgd $c -meta-split $split -lr $lr -optimizer $optim &> run_logs/$expname'.txt'
-			tail -n 5 run_logs/$expname'.txt'
-		fi
-		
-	done
+	lr=$lr
+	expname=$upAlg'.meta.'$split'.w_lr='$k'_sgd_lr='$sgdlr'_lr='$lr'_ntasks='$auxTasks'.'$optim'_AlphaReg='$aReg'_ftbsz='$ftbsz'_bsz='$bsz'_mbsz='$mbsz
+	echo 'Performing on '$expname
+
+	python -u main.py -num-aux-tasks $auxTasks -alpha-update-algo $upAlg -mode meta -num-runs $nruns -exp-name $exp_fldr'/meta/'$expname -meta-lr-weights $k  -meta-lr-sgd $sgdlr -meta-split $split -lr $lr -optimizer $optim -patience 2 -train-epochs 2 -main-super-class 'medium-sized_mammals' -meta-reg-alpha $aReg -prim-datafrac $primfrac -ft-batch-sz $ftbsz  -batch-sz $bsz -meta-batch-sz $mbsz &> run_logs/smallDAtaMeta/$expname'.txt'
+	tail -n 5 run_logs/smallDAtaMeta/$expname'.txt'
 done
+
