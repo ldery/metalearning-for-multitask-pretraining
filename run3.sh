@@ -1,13 +1,23 @@
 #!/bin/bash
 
-CUDA_VISIBLE_DEVICES=2 python -u main.py -num-aux-tasks 1 -alpha-update-algo softmax -mode meta -num-runs 1 -exp-name nolook_ablation/medium_mammals/stepped_lr/softmax.1.0 -meta-lr-weights 1e-2  -meta-lr-sgd 0 -meta-split val -lr 1e-1 -optimizer SGD -patience 200 -train-epochs 200 -main-super-class 'medium-sized_mammals' -batch-sz 128 -meta-batch-sz 32 -prim-datafrac 1.0 -use-lr-scheduler
+auxTasks=$1
+lr=$2
+optim=$3
+exp_fldr=$4
+ftbsz=$5
+bsz=$6
+dataFrac=$7
+bntype=$8
+ftlr=$9
 
-CUDA_VISIBLE_DEVICES=2 python -u main.py -num-aux-tasks 1 -alpha-update-algo softmax -mode meta -num-runs 1 -exp-name nolook_ablation/medium_mammals/stepped_lr/softmax.0.5 -meta-lr-weights 1e-2  -meta-lr-sgd 0 -meta-split val -lr 1e-1 -optimizer SGD -patience 200 -train-epochs 200 -main-super-class 'medium-sized_mammals' -batch-sz 128 -meta-batch-sz 32 -prim-datafrac 0.5 -use-lr-scheduler
+# MAKE THE APPROPRIATE RUN FLDR
+mkdir -p run_logs/'dataFrac-'$dataFrac
 
-CUDA_VISIBLE_DEVICES=2 python -u main.py -num-aux-tasks 1 -alpha-update-algo softmax -mode meta -num-runs 1 -exp-name nolook_ablation/medium_mammals/stepped_lr/softmax.0.1 -meta-lr-weights 1e-2  -meta-lr-sgd 0 -meta-split val -lr 1e-1 -optimizer SGD -patience 200 -train-epochs 200 -main-super-class 'medium-sized_mammals' -batch-sz 64 -meta-batch-sz 16 -prim-datafrac 0.1 -use-lr-scheduler
+# Include regular pre-training
+expname='dataFrac-'$dataFrac'/regular-pretrain-ntasks='$auxTasks'-lr.'$lr'-optim.'$optim'-ftbsz.'$ftbsz'-bsz.'$bsz'-bntype.'$bntype'-uselast.False-ftlr.'$ftlr
+echo 'Regular Pretraining ' $expname ' and save file is ' $expname'.txt'
+python -u main.py -ft-lr $ftlr -ft-batch-sz $ftbsz -batch-sz $bsz -prim-datafrac $dataFrac -lr $lr -num-aux-tasks $auxTasks -mode pretrain -num-runs 3 -optimizer $optim -exp-name $exp_fldr'/agnostic_pretraining/'$expname -train-epochs 200 -patience 200 -bn-type $bntype &> run_logs/$expname'.txt'
+tail -n 5 run_logs/$expname'.txt'
 
 
-
-# CUDA_VISIBLE_DEVICES=2 python -u main.py -num-aux-tasks 2 -alpha-update-algo softmax -mode meta -num-runs 1 -exp-name nolook_ablation/val_is_meta/small_lr.softmax -meta-lr-weights 5e-2  -meta-lr-sgd 5e-3 -meta-split val -lr 5e-3 -optimizer SGD -patience 200 -train-epochs 200
-
-# CUDA_VISIBLE_DEVICES=2 python -u main.py -num-aux-tasks 2 -alpha-update-algo softmax -mode meta -num-runs 1 -exp-name nolook_ablation/train_is_meta/small_lr.softmax -meta-lr-weights 5e-2  -meta-lr-sgd 5e-3 -meta-split train -lr 5e-3 -optimizer SGD -patience 200 -train-epochs 200
+echo 'DONE RUNNING - CAN SHUT OFF NOW'
