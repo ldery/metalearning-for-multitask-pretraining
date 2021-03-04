@@ -101,6 +101,19 @@ def get_head_dict(model):
 			head_dicts[1][pname] = param.cpu().detach().numpy()
 	return head_dicts
 
+def clip_grad_norms(max_norm):
+	def fn(grads):
+		with torch.no_grad():
+			grad_list = [grad for grad in grads if grad is not None]
+			total_norm = torch.norm(torch.stack([torch.norm(p) for p in grad_list]))
+			clip_coef = max_norm / (total_norm + 1e-6)
+			if clip_coef < 1:
+				for grad in grad_list:
+					grad.mul_(clip_coef.to(grad.device))
+		total_norm = torch.norm(torch.stack([torch.norm(p) for p in grad_list]))
+		return grads
+	return fn
+
 class Trainer(object):
 	def __init__(
 					self, train_epochs, patience,
@@ -345,19 +358,21 @@ class Trainer(object):
 
 			# Take the inner-loop step
 			# This is set to 0.0 so we have no look-ahead step
-			override_dict = {'lr': [torch.tensor([0.0]).cuda()]}
+			override_dict = {'lr': [torch.tensor([self.meta_lr_sgd]).cuda()]}
 			task_grads = {}
 			with higher.innerloop_ctx(model, optim, track_higher_grads=True, override=override_dict) as (fmodel, diffopt):
 				# Learn the updated model
 				this_weights = get_softmax(meta_weights) if self.alpha_update_algo == 'softmax' else meta_weights
 
 				if self.bn_type == 'grouped':
-					self.run_batch_grouped(fmodel, batch, None, this_weights, class_norms, task_grads=task_grads)
+					speculative_loss = self.run_batch_grouped(fmodel, batch, None, this_weights, class_norms, task_grads=task_grads)
 				elif self.bn_type == 'separate':
-					self.run_batch_separate(fmodel, batch, None, this_weights, class_norms, task_grads=task_grads)
+					speculative_loss = self.run_batch_separate(fmodel, batch, None, this_weights, class_norms, task_grads=task_grads)
 				else:
 					raise ValueError
 
+				# Take a speculative step
+				diffopt.step(speculative_loss, grad_callback=clip_grad_norms(self.max_grad_norm))
 				prim_batch = primary_batches[prim_idxs[group_idx]]
 
 				# Compute the loss on the meta-val set
@@ -373,6 +388,9 @@ class Trainer(object):
 				# For computing statistics
 				meta_grad = torch.autograd.grad(results[0], fmodel.parameters(), retain_graph=True, allow_unused=True)
 				meta_norm = self.calc_norm(meta_grad)
+
+				# Get the gradients w.r.t alpha
+				results[0].backward()
 
 
 			del fmodel
@@ -393,9 +411,9 @@ class Trainer(object):
 						normalization = self.meta_lr_sgd
 					if self.decoupled_weights and class_norms[key].grad is not None:
 						class_norms[key].grad.div_(normalization)
-					assert meta_weights[key].grad is None, 'This should be none at the moment'
-					meta_weights[key].grad = torch.zeros_like(meta_weights[key]) - dot_prod
-					meta_weights[key].grad.div_(normalization)
+# 					assert meta_weights[key].grad is None, 'This should be none at the moment'
+# 					meta_weights[key].grad = torch.zeros_like(meta_weights[key]) - dot_prod
+# 					meta_weights[key].grad.div_(normalization)
 					self.dp_stats[key].append(dot_prod)
 					self.weight_stats[key].append((meta_weights[key].item(), meta_weights[key].grad.item(), meta_norm, key_norm, self.dp_stats[key][-1]))
 
