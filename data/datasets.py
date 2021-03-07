@@ -35,6 +35,7 @@ class CIFAR100:
 		self.use_corrupted = kwargs['use_corrupted']
 		self.corrupt_frac = kwargs['corrupt_frac']
 		self.prim_key = kwargs['prim_key']
+		self.aux_batchsz = kwargs['aux_batchsz']
 		self._group_data(flatten=kwargs['flatten'], prim_datafrac=kwargs['prim_datafrac'], prim_key=kwargs['prim_key'])
 		self.aug_fns = augmentations_and_fns()
 
@@ -104,7 +105,13 @@ class CIFAR100:
 
 		# Calcuate the examples per-sub-clas. This equalizes the # of examples per-class in each batch.
 		# Maybe might be better to not do this. Confirm - Todo [ldery]
-		per_sub_class = math.ceil(batch_sz / (NUM_PER_SUPERCLASS * len(classes)))
+		per_sub_class = math.ceil(batch_sz / (NUM_PER_SUPERCLASS))
+		aux_per_sub_class = math.ceil(self.aux_batchsz / NUM_PER_SUPERCLASS)
+		# Need to balance this out for testing
+		aux_per_sub_class = aux_per_sub_class if split != 'test' else per_sub_class
+		prim_absent = self.prim_key not in classes
+		if prim_absent:
+			per_sub_class = aux_per_sub_class
 		assert per_sub_class > 0, 'Samples per-sub-class must be > 0'
 
 		# Setup the random idxs
@@ -146,10 +153,11 @@ class CIFAR100:
 				xs, ys = [], []
 				# Todo [ldery] - write a test to make sure it's a different batch shown at every iteration
 				# Tested [used main below]
+				this_per_sub_class = per_sub_class if (class_ == self.prim_key or prim_absent) else aux_per_sub_class
 				for id_, vals in enumerate(idxs):
-					xs.extend([data_[id_][i] for i in vals[:per_sub_class]])
-					ys.extend([id_ for _ in range(per_sub_class)])
-					idxs[id_] = vals[per_sub_class:]
+					xs.extend([data_[id_][i] for i in vals[:this_per_sub_class]])
+					ys.extend([id_ for _ in range(len(vals[:this_per_sub_class]))])
+					idxs[id_] = vals[this_per_sub_class:]
 				apply_augs(class_, (xs, ys), batch_dict, classes, self.aug_fns)
 				batch_dict[class_] = normalize_augmentation((xs, ys))
 
