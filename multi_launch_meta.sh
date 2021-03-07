@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-#SBATCH --job-name=varyMetaLR.1
-#SBATCH -e /home/ldery/meta4multitask_all/meta4multitask/m4m_cache/slurm_logs/meta/varyMetaLR.1.err
-#SBATCH -o /home/ldery/meta4multitask_all/meta4multitask/m4m_cache/slurm_logs/meta/varyMetaLR.1.out
+#SBATCH --job-name=1.NormedvaryMetaReg
+#SBATCH -e /home/ldery/meta4multitask_all/meta4multitask/m4m_cache/slurm_logs/meta/NormedvaryMetaReg.1.err
+#SBATCH -o /home/ldery/meta4multitask_all/meta4multitask/m4m_cache/slurm_logs/meta/NormedvaryMetaReg.1.out
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --time=72:00:00
@@ -12,10 +12,14 @@
 
 
 # Adam. Vary Met-Head Regularization
-# ./run4.sh softmax 1 8 8 4 1e-4 Adam metaSmallData 1
-./run4.sh softmax 1 8 8 4 1e-4 Adam metaSmallData 1
+# ./run4.sh softmax 1 8 8 4 1e-3 Adam metaSmallData 10  0.1
+# ./run4.sh softmax 1 8 8 4 1e-3 Adam metaSmallData 100 0.1
+# ./run4.sh softmax 1 8 8 4 1e-3 Adam metaSmallData 500 0.1
 
 
+./run4.sh softmax 1 8 8 4 1e-3 Adam metaSmallData 10  0.3
+./run4.sh softmax 1 8 8 4 1e-3 Adam metaSmallData 100 0.3
+./run4.sh softmax 1 8 8 4 1e-3 Adam metaSmallData 500 0.3
 
 
 # # Adam. Vary Met-Head Regularization
