@@ -42,6 +42,8 @@ def add_trainer_args(parser):
 	# Don't make this too high if not the consecutive grads don't align much
 	parser.add_argument('-meta-lr-sgd', type=float, default=1e-2, help='Inner loop sgd lr. Very important to tune')
 	parser.add_argument('-batch-sz', type=int, default=320)
+	parser.add_argument('-aux-batchsz', type=int, default=128)
+
 	parser.add_argument('-ft-batch-sz', type=int, default=128)
 	parser.add_argument(
 							'-meta-batch-sz', type=int, default=64,
@@ -340,7 +342,6 @@ class Trainer(object):
 
 		head_start = get_start_of_heads(model)
 		for group_idx, batch in enumerate(group_iter):
-
 			optim.zero_grad()
 
 			# Take the inner-loop step

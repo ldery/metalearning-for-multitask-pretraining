@@ -134,7 +134,7 @@ def main():
 	dataset = CIFAR100(
 						flatten=False, prim_datafrac=opts.prim_datafrac,
 						prim_key=opts.main_super_class, use_corrupted=opts.use_corrupted,
-						corrupt_frac=opts.corrupt_frac
+						corrupt_frac=opts.corrupt_frac, aux_batchsz=opts.aux_batchsz
 					)
 
 	# Get the trainer
